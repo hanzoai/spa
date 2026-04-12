@@ -50,10 +50,17 @@ func main() {
 }
 
 func spaHandler(root string) http.Handler {
+	// X-Frame-Options: DENY by default. Set ALLOW_FRAMING=true to omit (for embeddable apps).
+	allowFraming := os.Getenv("ALLOW_FRAMING") == "true"
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Security headers
 		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if !allowFraming {
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		}
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 
