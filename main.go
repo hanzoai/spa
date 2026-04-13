@@ -1,10 +1,21 @@
 // Package main is hanzoai/spa — zero-config SPA server.
 //
-// Drop your Vite/React build output into /public and run. That's it.
-// SPA mode is always on. No flags needed.
+// Single app mode (default):
 //
 //	FROM ghcr.io/hanzoai/spa
 //	COPY dist /public
+//
+// Multi-app mode (MULTI_APP=true):
+//
+//	FROM ghcr.io/hanzoai/spa
+//	COPY --from=build /app/apps/superadmin/dist /public/superadmin
+//	COPY --from=build /app/apps/ats/dist        /public/ats
+//	ENV MULTI_APP=true
+//
+// In multi-app mode, the hostname prefix selects the app:
+//   ats.example.com   → /public/ats/
+//   bd.example.com    → /public/bd/
+//   Default           → /public/superadmin/
 //
 // Features:
 //   - SPA mode: index.html served for all routes (client-side routing)
@@ -36,46 +47,88 @@ func main() {
 	if root == "" {
 		root = "/public"
 	}
+	multiApp := os.Getenv("MULTI_APP") == "true"
+	defaultApp := os.Getenv("DEFAULT_APP")
+	if defaultApp == "" {
+		defaultApp = "superadmin"
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
-	mux.Handle("/", spaHandler(root))
 
-	addr := ":" + port
-	log.Printf("spa: serving %s on %s", root, addr)
-	log.Fatal(http.ListenAndServe(addr, mux))
+	if multiApp {
+		log.Printf("spa: multi-app mode, root=%s, default=%s, port=%s", root, defaultApp, port)
+		mux.Handle("/", multiAppHandler(root, defaultApp))
+	} else {
+		log.Printf("spa: serving %s on :%s", root, port)
+		mux.Handle("/", spaHandler(root))
+	}
+
+	log.Fatal(http.ListenAndServe(":"+port, mux))
+}
+
+// resolveApp picks the app subdirectory from the hostname prefix.
+func resolveApp(host, defaultApp string) string {
+	// Strip port
+	if idx := strings.IndexByte(host, ':'); idx >= 0 {
+		host = host[:idx]
+	}
+	// First label of hostname
+	prefix := host
+	if idx := strings.IndexByte(host, '.'); idx >= 0 {
+		prefix = host[:idx]
+	}
+	switch prefix {
+	case "ats", "bd", "ta", "superadmin":
+		return prefix
+	default:
+		return defaultApp
+	}
+}
+
+func multiAppHandler(root, defaultApp string) http.Handler {
+	allowFraming := os.Getenv("ALLOW_FRAMING") == "true"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		app := resolveApp(r.Host, defaultApp)
+		appRoot := filepath.Join(root, app)
+		setSecurityHeaders(w, allowFraming)
+
+		path := filepath.Join(appRoot, filepath.Clean(r.URL.Path))
+		fi, err := os.Stat(path)
+		if err != nil || fi.IsDir() {
+			serveFile(w, r, filepath.Join(appRoot, "index.html"), true)
+			return
+		}
+		serveFile(w, r, path, false)
+	})
 }
 
 func spaHandler(root string) http.Handler {
-	// X-Frame-Options: DENY by default. Set ALLOW_FRAMING=true to omit (for embeddable apps).
 	allowFraming := os.Getenv("ALLOW_FRAMING") == "true"
-
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Security headers
-		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if !allowFraming {
-			w.Header().Set("X-Frame-Options", "DENY")
-			w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
-		}
-		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-
+		setSecurityHeaders(w, allowFraming)
 		path := filepath.Join(root, filepath.Clean(r.URL.Path))
-
-		// Try the exact file first
 		fi, err := os.Stat(path)
 		if err != nil || fi.IsDir() {
-			// SPA fallback: serve index.html for any missing path
 			serveFile(w, r, filepath.Join(root, "index.html"), true)
 			return
 		}
-
 		serveFile(w, r, path, false)
 	})
+}
+
+func setSecurityHeaders(w http.ResponseWriter, allowFraming bool) {
+	w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if !allowFraming {
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	}
+	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
 }
 
 func serveFile(w http.ResponseWriter, r *http.Request, path string, isFallback bool) {
@@ -92,14 +145,12 @@ func serveFile(w http.ResponseWriter, r *http.Request, path string, isFallback b
 		return
 	}
 
-	// Content type
 	ext := filepath.Ext(path)
 	ct := mime.TypeByExtension(ext)
 	if ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
 
-	// Cache policy: hashed assets get 1 year, everything else no-cache
 	name := filepath.Base(path)
 	if isFallback || name == "index.html" {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -109,7 +160,6 @@ func serveFile(w http.ResponseWriter, r *http.Request, path string, isFallback b
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 	}
 
-	// Try pre-compressed versions (Brotli > Gzip)
 	accept := r.Header.Get("Accept-Encoding")
 	if strings.Contains(accept, "br") {
 		if br, err := os.Open(path + ".br"); err == nil {
@@ -133,11 +183,9 @@ func serveFile(w http.ResponseWriter, r *http.Request, path string, isFallback b
 	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
 }
 
-// isHashedAsset detects Vite/Webpack hashed filenames like index-DByAis3x.js
 func isHashedAsset(name string) bool {
 	ext := filepath.Ext(name)
 	base := strings.TrimSuffix(name, ext)
-	// Pattern: name-HASH.ext where HASH is 6+ alphanumeric chars
 	if idx := strings.LastIndex(base, "-"); idx > 0 {
 		hash := base[idx+1:]
 		if len(hash) >= 6 {
