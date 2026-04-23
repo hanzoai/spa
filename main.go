@@ -45,6 +45,8 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -75,6 +77,27 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
+
+	// Reverse-proxy routes. Each PROXY_<PREFIX>=<upstream-url> env var
+	// installs a prefix handler that forwards matching requests to the
+	// upstream. Example:
+	//   PROXY_V1=http://api.liquidity:8080    → /v1/* → api.liquidity:8080
+	//   PROXY_API=https://api.satschel.com    → /api/* → api.satschel.com
+	// The exchange SPA needs this so relative `/v1/*` fetches don't fall
+	// through the SPA 404 handler and come back as `index.html`.
+	for _, e := range os.Environ() {
+		k, v, ok := strings.Cut(e, "=")
+		if !ok || !strings.HasPrefix(k, "PROXY_") || v == "" {
+			continue
+		}
+		prefix := "/" + strings.ToLower(strings.TrimPrefix(k, "PROXY_")) + "/"
+		upstream, err := url.Parse(v)
+		if err != nil {
+			log.Fatalf("spa: PROXY_%s parse: %v", strings.TrimPrefix(k, "PROXY_"), err)
+		}
+		mux.Handle(prefix, httputil.NewSingleHostReverseProxy(upstream))
+		log.Printf("spa: proxy %s → %s", prefix, upstream)
+	}
 
 	if multiApp {
 		log.Printf("spa: multi-app mode, root=%s, default=%s, port=%s", root, defaultApp, port)
