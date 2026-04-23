@@ -247,15 +247,32 @@ func spaHandler(root string) http.Handler {
 	})
 }
 
+// permissionsPolicyHeader and cspFrameAncestorsHeader are evaluated once
+// at startup. SPAs that need camera/mic (biometric KYC) or inline-script
+// CSP (dev HMR, analytics) set the env vars; defaults stay locked-down.
+var (
+	permissionsPolicyHeader = envOr("SPA_PERMISSIONS_POLICY",
+		"camera=(), microphone=(), geolocation=()")
+	cspFrameAncestorsHeader = envOr("SPA_CSP",
+		"frame-ancestors 'none'")
+)
+
+func envOr(k, fallback string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return fallback
+}
+
 func setSecurityHeaders(w http.ResponseWriter, allowFraming bool) {
 	w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if !allowFraming {
 		w.Header().Set("X-Frame-Options", "DENY")
-		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", cspFrameAncestorsHeader)
 	}
 	w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
-	w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+	w.Header().Set("Permissions-Policy", permissionsPolicyHeader)
 }
 
 func serveFile(w http.ResponseWriter, r *http.Request, path string, isFallback bool) {
