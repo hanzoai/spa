@@ -245,14 +245,7 @@ func multiAppHandler(root, defaultApp string) http.Handler {
 		app := resolveApp(r.Host, defaultApp)
 		appRoot := filepath.Join(root, app)
 		setSecurityHeaders(w, allowFraming)
-
-		path := filepath.Join(appRoot, filepath.Clean(r.URL.Path))
-		fi, err := os.Stat(path)
-		if err != nil || fi.IsDir() {
-			serveFile(w, r, filepath.Join(appRoot, "index.html"), true)
-			return
-		}
-		serveFile(w, r, path, false)
+		resolveAndServe(w, r, appRoot)
 	})
 }
 
@@ -260,14 +253,34 @@ func spaHandler(root string) http.Handler {
 	allowFraming := os.Getenv("ALLOW_FRAMING") == "true"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w, allowFraming)
-		path := filepath.Join(root, filepath.Clean(r.URL.Path))
-		fi, err := os.Stat(path)
-		if err != nil || fi.IsDir() {
-			serveFile(w, r, filepath.Join(root, "index.html"), true)
-			return
-		}
-		serveFile(w, r, path, false)
+		resolveAndServe(w, r, root)
 	})
+}
+
+// resolveAndServe handles both Vite-style SPAs (one index.html) and Next.js
+// static exports (per-route .html or per-route /index.html). Resolution order:
+//   1. <root>/<path>        — exact file (e.g. /favicon.ico)
+//   2. <root>/<path>.html   — Next.js export with trailingSlash:false (/foo → /foo.html)
+//   3. <root>/<path>/index.html  — Next.js export with trailingSlash:true OR a directory hit
+//   4. <root>/index.html    — SPA fallback for client-side routing
+func resolveAndServe(w http.ResponseWriter, r *http.Request, root string) {
+	clean := filepath.Clean(r.URL.Path)
+	path := filepath.Join(root, clean)
+
+	if fi, err := os.Stat(path); err == nil && !fi.IsDir() {
+		serveFile(w, r, path, false)
+		return
+	}
+	if fi, err := os.Stat(path + ".html"); err == nil && !fi.IsDir() {
+		serveFile(w, r, path+".html", false)
+		return
+	}
+	idx := filepath.Join(path, "index.html")
+	if fi, err := os.Stat(idx); err == nil && !fi.IsDir() {
+		serveFile(w, r, idx, false)
+		return
+	}
+	serveFile(w, r, filepath.Join(root, "index.html"), true)
 }
 
 // permissionsPolicyHeader and cspFrameAncestorsHeader are evaluated once
