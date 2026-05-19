@@ -187,3 +187,74 @@ func TestResolveAndServeNextExport(t *testing.T) {
 		}
 	}
 }
+
+func TestHealthCacheControl(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Write([]byte(`{"status":"ok"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	r, err := http.Get(srv.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Body.Close()
+	if got := r.Header.Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store (CDN must not cache /health)", got)
+	}
+}
+
+func TestServeFileVaryAccept(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("ROOT"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(spaHandler(dir))
+	defer srv.Close()
+
+	// Identity (no precompressed variant available) — Vary still required.
+	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
+	req.Header.Set("Accept-Encoding", "gzip, br")
+	r, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Body.Close()
+	if r.Header.Get("Vary") != "Accept-Encoding" {
+		t.Errorf("Vary = %q, want Accept-Encoding (CDN representation cache requires this)", r.Header.Get("Vary"))
+	}
+	if r.Header.Get("Content-Encoding") != "" {
+		t.Errorf("Content-Encoding = %q, want empty (no .br/.gz on disk)", r.Header.Get("Content-Encoding"))
+	}
+}
+
+func TestAcceptsEncoding(t *testing.T) {
+	cases := []struct {
+		header string
+		coding string
+		want   bool
+	}{
+		{"gzip, br", "br", true},
+		{"gzip, br", "gzip", true},
+		{"identity", "br", false},
+		{"", "br", false},
+		{"br;q=0", "br", false},
+		{"gzip, br;q=0", "br", false},
+		{"gzip, br;q=0", "gzip", true},
+		{"br;q=0.0", "br", false},
+		{"br;q=0.5", "br", true},
+		{"BR", "br", true},
+		{" br ", "br", true},
+		{"*", "br", true},
+		{"*;q=0", "br", false},
+	}
+	for _, c := range cases {
+		if got := acceptsEncoding(c.header, c.coding); got != c.want {
+			t.Errorf("acceptsEncoding(%q, %q) = %v, want %v", c.header, c.coding, got, c.want)
+		}
+	}
+}
