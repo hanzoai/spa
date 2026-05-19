@@ -75,6 +75,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
@@ -344,27 +345,62 @@ func serveFile(w http.ResponseWriter, r *http.Request, path string, isFallback b
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 	}
 
+	// Vary: Accept-Encoding is required regardless of which branch fires —
+	// the response varies by the request's Accept-Encoding even when we
+	// fall through to the identity body (CDN representation cache must
+	// not serve the identity bytes to a client that asked for br/gzip).
+	w.Header().Set("Vary", "Accept-Encoding")
+
 	accept := r.Header.Get("Accept-Encoding")
-	if strings.Contains(accept, "br") {
+	if acceptsEncoding(accept, "br") {
 		if br, err := os.Open(path + ".br"); err == nil {
 			defer br.Close()
 			w.Header().Set("Content-Encoding", "br")
-			w.Header().Set("Vary", "Accept-Encoding")
 			io.Copy(w, br)
 			return
 		}
 	}
-	if strings.Contains(accept, "gzip") {
+	if acceptsEncoding(accept, "gzip") {
 		if gz, err := os.Open(path + ".gz"); err == nil {
 			defer gz.Close()
 			w.Header().Set("Content-Encoding", "gzip")
-			w.Header().Set("Vary", "Accept-Encoding")
 			io.Copy(w, gz)
 			return
 		}
 	}
 
 	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
+}
+
+// acceptsEncoding reports whether the Accept-Encoding header allows the given
+// coding. A token is allowed unless the client explicitly disables it with
+// `;q=0`. Whitespace and case are ignored. Falls back to a substring check
+// for the most common single-token forms (br, gzip).
+func acceptsEncoding(header, coding string) bool {
+	for _, part := range strings.Split(header, ",") {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		name := token
+		q := "1"
+		if i := strings.IndexByte(token, ';'); i >= 0 {
+			name = strings.TrimSpace(token[:i])
+			rest := strings.TrimSpace(token[i+1:])
+			if eq := strings.IndexByte(rest, '='); eq > 0 && strings.EqualFold(strings.TrimSpace(rest[:eq]), "q") {
+				q = strings.TrimSpace(rest[eq+1:])
+			}
+		}
+		if !strings.EqualFold(name, coding) && name != "*" {
+			continue
+		}
+		// q=0 is "not acceptable" per RFC 9110 §12.5.3.
+		if q == "0" || strings.HasPrefix(q, "0.") && strings.TrimLeft(q[2:], "0") == "" {
+			return false
+		}
+		return true
+	}
+	return false
 }
 
 func isHashedAsset(name string) bool {
