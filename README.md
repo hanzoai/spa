@@ -39,13 +39,13 @@ env:
 - name: SPA_ENV
   value: test
 - name: SPA_API_HOST
-  value: https://api.test.hanzo.ai
+  value: https://api.test.example.com
 - name: SPA_IAM_HOST
-  value: https://iam.test.hanzo.ai
+  value: https://iam.test.example.com
 - name: SPA_RPC_HOST
-  value: https://rpc.test.hanzo.ai
+  value: https://rpc.test.example.com
 - name: SPA_ID_HOST
-  value: https://id.test.hanzo.ai
+  value: https://id.test.example.com
 - name: SPA_CHAIN_ID
   value: "8675310"
 ```
@@ -53,7 +53,7 @@ env:
 Writes at startup:
 
 ```json
-{"apiHost":"https://api.test.hanzo.ai","chainId":8675310,"env":"test","iamHost":"https://iam.test.hanzo.ai","idHost":"https://id.test.hanzo.ai","rpcHost":"https://rpc.test.hanzo.ai","v":1}
+{"apiHost":"https://api.test.example.com","chainId":8675310,"env":"test","iamHost":"https://iam.test.example.com","idHost":"https://id.test.example.com","rpcHost":"https://rpc.test.example.com","v":1}
 ```
 
 Rules:
