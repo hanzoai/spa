@@ -37,7 +37,7 @@ func TestParseValue(t *testing.T) {
 	if parseValue("8675310") != int64(8675310) {
 		t.Errorf("8675310 should parse to int64, got %T", parseValue("8675310"))
 	}
-	if parseValue("https://api.test.") != "https://api.test." {
+	if parseValue("https://api.test.example.com") != "https://api.test.example.com" {
 		t.Error("URL should stay string")
 	}
 	if parseValue("v1.2.3") != "v1.2.3" {
@@ -52,8 +52,8 @@ func TestWriteRuntimeConfigSingleApp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Setenv("SPA_API_HOST", "https://api.test.")
-	t.Setenv("SPA_IAM_HOST", "https://iam.test.")
+	t.Setenv("SPA_API_HOST", "https://api.test.example.com")
+	t.Setenv("SPA_IAM_HOST", "https://iam.test.example.com")
 	t.Setenv("SPA_CHAIN_ID", "8675310")
 	t.Setenv("SPA_ENV", "test")
 
@@ -70,10 +70,10 @@ func TestWriteRuntimeConfigSingleApp(t *testing.T) {
 		t.Fatalf("invalid JSON: %v\n%s", err, raw)
 	}
 
-	if got["apiHost"] != "https://api.test." {
+	if got["apiHost"] != "https://api.test.example.com" {
 		t.Errorf("apiHost = %v", got["apiHost"])
 	}
-	if got["iamHost"] != "https://iam.test." {
+	if got["iamHost"] != "https://iam.test.example.com" {
 		t.Errorf("iamHost = %v", got["iamHost"])
 	}
 	if got["chainId"].(float64) != 8675310 {
@@ -99,7 +99,7 @@ func TestWriteRuntimeConfigMultiApp(t *testing.T) {
 		}
 	}
 
-	t.Setenv("SPA_API_HOST", "https://api.test.")
+	t.Setenv("SPA_API_HOST", "https://api.test.example.com")
 	t.Setenv("SPA_ENV", "test")
 
 	if err := writeRuntimeConfig(root, true); err != nil {
@@ -115,7 +115,7 @@ func TestWriteRuntimeConfigMultiApp(t *testing.T) {
 		if err := json.Unmarshal(raw, &got); err != nil {
 			t.Fatalf("%s: invalid JSON: %v", name, err)
 		}
-		if got["apiHost"] != "https://api.test." {
+		if got["apiHost"] != "https://api.test.example.com" {
 			t.Errorf("%s: apiHost = %v", name, got["apiHost"])
 		}
 	}
