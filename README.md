@@ -39,13 +39,13 @@ env:
 - name: SPA_ENV
   value: test
 - name: SPA_API_HOST
-  value: https://api.test.
+  value: https://api.test.example.com
 - name: SPA_IAM_HOST
-  value: https://iam.test.
+  value: https://iam.test.example.com
 - name: SPA_RPC_HOST
-  value: https://rpc.test.
+  value: https://rpc.test.example.com
 - name: SPA_ID_HOST
-  value: https://id.test.
+  value: https://id.test.example.com
 - name: SPA_CHAIN_ID
   value: "8675310"
 ```
@@ -53,7 +53,7 @@ env:
 Writes at startup:
 
 ```json
-{"apiHost":"https://api.test.","chainId":8675310,"env":"test","iamHost":"https://iam.test.","idHost":"https://id.test.","rpcHost":"https://rpc.test.","v":1}
+{"apiHost":"https://api.test.example.com","chainId":8675310,"env":"test","iamHost":"https://iam.test.example.com","idHost":"https://id.test.example.com","rpcHost":"https://rpc.test.example.com","v":1}
 ```
 
 Rules:

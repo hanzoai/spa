@@ -18,8 +18,8 @@
 //   Default           → /public/superadmin/
 //
 // Runtime config:
-//   SPA_API_HOST=https://api.test.
-//   SPA_IAM_HOST=https://iam.test.
+//   SPA_API_HOST=https://api.test.example.com
+//   SPA_IAM_HOST=https://iam.test.example.com
 //   SPA_CHAIN_ID=8675310
 //   SPA_ENV=test
 // ...at startup is templated into /public/config.json (or
@@ -82,8 +82,8 @@ func main() {
 	// Reverse-proxy routes. Each PROXY_<PREFIX>=<upstream-url> env var
 	// installs a prefix handler that forwards matching requests to the
 	// upstream. Example:
-	//   PROXY_V1=http://api.liquidity:8080    → /v1/* → api.liquidity:8080
-	//   PROXY_API=https://api.    → /api/* → api.
+	//   PROXY_V1=http://api.tenant:8080    → /v1/* → api.tenant:8080
+	//   PROXY_API=https://api.example.com    → /api/* → api.example.com
 	// The exchange SPA needs this so relative `/v1/*` fetches don't fall
 	// through the SPA 404 handler and come back as `index.html`.
 	for _, e := range os.Environ() {
