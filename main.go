@@ -79,6 +79,27 @@ func main() {
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
+	// 301 redirect routes. REDIRECTS=/from1=/to1,/from2=/to2 installs an
+	// exact-match handler for each pair that returns 301 → target.
+	// Useful when consolidating multi-page sites into a single landing
+	// and you want old URLs to redirect rather than 404 / fall through
+	// to index.html.
+	if redirects := os.Getenv("REDIRECTS"); redirects != "" {
+		for _, pair := range strings.Split(redirects, ",") {
+			pair = strings.TrimSpace(pair)
+			from, to, ok := strings.Cut(pair, "=")
+			if !ok || from == "" || to == "" {
+				log.Printf("spa: ignoring malformed REDIRECTS pair %q", pair)
+				continue
+			}
+			fromPath, toPath := from, to
+			mux.HandleFunc(fromPath, func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, toPath, http.StatusMovedPermanently)
+			})
+			log.Printf("spa: redirect %s → %s (301)", from, to)
+		}
+	}
+
 	// Reverse-proxy routes. Each PROXY_<PREFIX>=<upstream-url> env var
 	// installs a prefix handler that forwards matching requests to the
 	// upstream. Example:
