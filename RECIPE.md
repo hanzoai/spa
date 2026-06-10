@@ -55,22 +55,22 @@ hostname prefix), use `MULTI_APP=true`:
 
 ```dockerfile
 FROM ghcr.io/hanzoai/spa:1.2.0
-COPY --from=build /app/apps/superadmin/dist  /public/superadmin
-COPY --from=build /app/apps/ats/dist         /public/ats
-COPY --from=build /app/apps/bd/dist          /public/bd
-COPY --from=build /app/apps/ta/dist          /public/ta
+COPY --from=build /app/apps/default/dist  /public/default
+COPY --from=build /app/apps/admin/dist    /public/admin
+COPY --from=build /app/apps/app/dist      /public/app
+COPY --from=build /app/apps/console/dist  /public/console
 ENV MULTI_APP=true
-ENV DEFAULT_APP=superadmin
+ENV DEFAULT_APP=default
 ```
 
 Hostname prefix routing:
 
-| Hostname            | Served from              |
-|---------------------|--------------------------|
-| `ats.example.com`   | `/public/ats/`           |
-| `bd.example.com`    | `/public/bd/`            |
-| `ta.example.com`    | `/public/ta/`            |
-| anything else       | `/public/$DEFAULT_APP/`  |
+| Hostname              | Served from              |
+|-----------------------|--------------------------|
+| `admin.example.com`   | `/public/admin/`         |
+| `app.example.com`     | `/public/app/`           |
+| `console.example.com` | `/public/console/`       |
+| anything else         | `/public/$DEFAULT_APP/`  |
 
 ## Caller workflow (`.github/workflows/docker.yml`)
 
