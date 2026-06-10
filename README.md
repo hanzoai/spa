@@ -26,7 +26,7 @@ That's it. No flags, no config files, no Node.js.
 | `PORT` | `3000` | Listen port |
 | `ROOT` | `/public` | Static files directory |
 | `MULTI_APP` | `false` | Hostname-prefix routing to `/public/<app>/` |
-| `DEFAULT_APP` | `superadmin` | Fallback app in multi-app mode |
+| `DEFAULT_APP` | `default` | Fallback app in multi-app mode |
 | `ALLOW_FRAMING` | `false` | Drop X-Frame-Options + frame-ancestors |
 | `SPA_*` | — | Templated into `/public/config.json` (see below) |
 
@@ -47,13 +47,13 @@ env:
 - name: SPA_ID_HOST
   value: https://id.test.example.com
 - name: SPA_CHAIN_ID
-  value: "8675310"
+  value: "1"
 ```
 
 Writes at startup:
 
 ```json
-{"apiHost":"https://api.test.example.com","chainId":8675310,"env":"test","iamHost":"https://iam.test.example.com","idHost":"https://id.test.example.com","rpcHost":"https://rpc.test.example.com","v":1}
+{"apiHost":"https://api.test.example.com","chainId":1,"env":"test","iamHost":"https://iam.test.example.com","idHost":"https://id.test.example.com","rpcHost":"https://rpc.test.example.com","v":1}
 ```
 
 Rules:
