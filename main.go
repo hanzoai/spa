@@ -8,19 +8,19 @@
 // Multi-app mode (MULTI_APP=true):
 //
 //	FROM ghcr.io/hanzoai/spa
-//	COPY --from=build /app/apps/superadmin/dist /public/superadmin
-//	COPY --from=build /app/apps/ats/dist        /public/ats
+//	COPY --from=build /app/apps/default/dist  /public/default
+//	COPY --from=build /app/apps/admin/dist    /public/admin
 //	ENV MULTI_APP=true
 //
 // In multi-app mode, the hostname prefix selects the app:
-//   ats.example.com   → /public/ats/
-//   bd.example.com    → /public/bd/
-//   Default           → /public/superadmin/
+//   admin.example.com → /public/admin/
+//   app.example.com   → /public/app/
+//   Default           → /public/default/
 //
 // Runtime config:
 //   SPA_API_HOST=https://api.test.example.com
 //   SPA_IAM_HOST=https://iam.test.example.com
-//   SPA_CHAIN_ID=8675310
+//   SPA_CHAIN_ID=1
 //   SPA_ENV=test
 // ...at startup is templated into /public/config.json (or
 // /public/<app>/config.json per app in multi-app mode). SPA reads
@@ -65,7 +65,7 @@ func main() {
 	multiApp := os.Getenv("MULTI_APP") == "true"
 	defaultApp := os.Getenv("DEFAULT_APP")
 	if defaultApp == "" {
-		defaultApp = "superadmin"
+		defaultApp = "default"
 	}
 
 	if err := writeRuntimeConfig(root, multiApp); err != nil {
@@ -243,7 +243,13 @@ func parseValue(v string) any {
 }
 
 // resolveApp picks the app subdirectory from the hostname prefix.
+// The first label of the hostname maps to a directory under root;
+// if that directory exists, the prefix wins, otherwise defaultApp is used.
 func resolveApp(host, defaultApp string) string {
+	return resolveAppWithRoot(host, defaultApp, "")
+}
+
+func resolveAppWithRoot(host, defaultApp, root string) string {
 	// Strip port
 	if idx := strings.IndexByte(host, ':'); idx >= 0 {
 		host = host[:idx]
@@ -253,18 +259,28 @@ func resolveApp(host, defaultApp string) string {
 	if idx := strings.IndexByte(host, '.'); idx >= 0 {
 		prefix = host[:idx]
 	}
-	switch prefix {
-	case "ats", "bd", "ta", "superadmin":
-		return prefix
-	default:
+	if prefix == "" || prefix == host {
 		return defaultApp
 	}
+	// Only accept simple identifiers so a hostile Host header can't escape root.
+	for _, c := range prefix {
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return defaultApp
+		}
+	}
+	if root != "" {
+		if stat, err := os.Stat(filepath.Join(root, prefix)); err == nil && stat.IsDir() {
+			return prefix
+		}
+		return defaultApp
+	}
+	return prefix
 }
 
 func multiAppHandler(root, defaultApp string) http.Handler {
 	allowFraming := os.Getenv("ALLOW_FRAMING") == "true"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		app := resolveApp(r.Host, defaultApp)
+		app := resolveAppWithRoot(r.Host, defaultApp, root)
 		appRoot := filepath.Join(root, app)
 		setSecurityHeaders(w, allowFraming)
 		resolveAndServe(w, r, appRoot)
