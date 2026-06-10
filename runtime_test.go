@@ -34,8 +34,8 @@ func TestParseValue(t *testing.T) {
 	if parseValue("false") != false {
 		t.Error("false should parse to bool false")
 	}
-	if parseValue("8675310") != int64(8675310) {
-		t.Errorf("8675310 should parse to int64, got %T", parseValue("8675310"))
+	if parseValue("42") != int64(42) {
+		t.Errorf("42 should parse to int64, got %T", parseValue("42"))
 	}
 	if parseValue("https://api.test.example.com") != "https://api.test.example.com" {
 		t.Error("URL should stay string")
@@ -54,7 +54,7 @@ func TestWriteRuntimeConfigSingleApp(t *testing.T) {
 
 	t.Setenv("SPA_API_HOST", "https://api.test.example.com")
 	t.Setenv("SPA_IAM_HOST", "https://iam.test.example.com")
-	t.Setenv("SPA_CHAIN_ID", "8675310")
+	t.Setenv("SPA_CHAIN_ID", "1")
 	t.Setenv("SPA_ENV", "test")
 
 	if err := writeRuntimeConfig(dir, false); err != nil {
@@ -76,7 +76,7 @@ func TestWriteRuntimeConfigSingleApp(t *testing.T) {
 	if got["iamHost"] != "https://iam.test.example.com" {
 		t.Errorf("iamHost = %v", got["iamHost"])
 	}
-	if got["chainId"].(float64) != 8675310 {
+	if got["chainId"].(float64) != 1 {
 		t.Errorf("chainId = %v", got["chainId"])
 	}
 	if got["env"] != "test" {
@@ -89,7 +89,7 @@ func TestWriteRuntimeConfigSingleApp(t *testing.T) {
 
 func TestWriteRuntimeConfigMultiApp(t *testing.T) {
 	root := t.TempDir()
-	for _, name := range []string{"superadmin", "ats", "bd", "ta"} {
+	for _, name := range []string{"default", "admin", "app", "console"} {
 		d := filepath.Join(root, name)
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
@@ -106,7 +106,7 @@ func TestWriteRuntimeConfigMultiApp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, name := range []string{"superadmin", "ats", "bd", "ta"} {
+	for _, name := range []string{"default", "admin", "app", "console"} {
 		raw, err := os.ReadFile(filepath.Join(root, name, "config.json"))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
