@@ -1,3 +1,5 @@
+<p align="center"><img src=".github/hero.svg" alt="spa" width="880"></p>
+
 # hanzoai/spa
 
 Zero-config SPA server. Drop your build output and run.
