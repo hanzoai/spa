@@ -268,9 +268,9 @@ func runFlow(t *testing.T, iamEmail string) (int, string, bool) {
 	t.Setenv("SPA_PROTECT", "iam")
 	t.Setenv("SPA_IAM_HOST", iam.URL)
 	t.Setenv("SPA_PROTECT_CLIENT_ID", "karma-style")
-	t.Setenv("SPA_PROTECT_CLIENT_SECRET", "shh")
+	t.Setenv("PROTECT_CLIENT_SECRET", "shh")
 	t.Setenv("SPA_PROTECT_ALLOW", "z@hanzo.ai,a@hanzo.ai")
-	t.Setenv("SPA_PROTECT_COOKIE_SECRET", "test-cookie-secret-0123456789abcd")
+	t.Setenv("PROTECT_COOKIE_SECRET", "test-cookie-secret-0123456789abcd")
 	t.Setenv("SPA_PROTECT_REDIRECT", "https://karma.style/auth/callback")
 
 	p := loadProtect()
@@ -394,5 +394,62 @@ func TestMissingAssetIsNotShell(t *testing.T) {
 	}
 	if body != "SHELL" {
 		t.Errorf("/shop: body = %q, want SHELL (client route → index.html)", body)
+	}
+}
+
+// --- config.json must never leak a secret ------------------------------------
+
+// config.json is served to browsers. The protect secrets are non-SPA_ so they
+// are never templated, and any SPA_* key that looks like a secret is dropped.
+// Browser-safe SPA_* vars (including SPA_COMMERCE_TOKEN) must still appear.
+func TestRuntimeConfigExcludesSecrets(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(`{"v":1}`), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Secrets — must NOT appear in config.json.
+	t.Setenv("PROTECT_CLIENT_SECRET", "OIDC-CLIENT-SECRET-VALUE") // non-SPA_
+	t.Setenv("PROTECT_COOKIE_SECRET", "COOKIE-HMAC-KEY-VALUE")    // non-SPA_
+	t.Setenv("SPA_PROTECT_CLIENT_SECRET", "LEGACY-SPA-SECRET")    // SPA_ + SECRET → filtered
+	t.Setenv("SPA_DB_PASSWORD", "DB-PASSWORD-VALUE")              // SPA_ + PASSWORD → filtered
+	t.Setenv("SPA_TLS_PRIVATE_KEY", "PRIVATE-KEY-VALUE")          // SPA_ + PRIVATE → filtered
+	// Browser-safe — MUST appear.
+	t.Setenv("SPA_API_HOST", "https://api.example.com")
+	t.Setenv("SPA_COMMERCE_TOKEN", "PUBLISHED-COMMERCE-TOKEN") // TOKEN is intentionally allowed
+
+	if err := writeRuntimeConfig(dir, false); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(raw)
+
+	for _, leak := range []string{
+		"OIDC-CLIENT-SECRET-VALUE", "COOKIE-HMAC-KEY-VALUE",
+		"LEGACY-SPA-SECRET", "DB-PASSWORD-VALUE", "PRIVATE-KEY-VALUE",
+	} {
+		if strings.Contains(got, leak) {
+			t.Errorf("config.json LEAKED a secret value %q:\n%s", leak, got)
+		}
+	}
+	// And parse it to be sure no camelCased secret keys slipped in.
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("config.json invalid: %v\n%s", err, got)
+	}
+	for _, k := range []string{"protectClientSecret", "dbPassword", "tlsPrivateKey"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("config.json contains sensitive key %q", k)
+		}
+	}
+	// Browser-safe vars survive.
+	if m["apiHost"] != "https://api.example.com" {
+		t.Errorf("apiHost missing/wrong: %v", m["apiHost"])
+	}
+	if m["commerceToken"] != "PUBLISHED-COMMERCE-TOKEN" {
+		t.Errorf("SPA_COMMERCE_TOKEN must survive (browser-safe Published token): %v", m["commerceToken"])
 	}
 }
