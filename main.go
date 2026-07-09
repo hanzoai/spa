@@ -129,7 +129,10 @@ func main() {
 		mux.Handle("/", spaHandler(root))
 	}
 
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	// Optional native auth gate. When SPA_PROTECT is unset, loadProtect returns
+	// nil and wrap is a no-op — the mux is served byte-for-byte as before.
+	handler := loadProtect().wrap(mux)
+	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
 
 // writeRuntimeConfig templates /public/config.json (or each app's config.json
@@ -316,6 +319,15 @@ func resolveAndServe(w http.ResponseWriter, r *http.Request, root string) {
 	idx := filepath.Join(path, "index.html")
 	if fi, err := os.Stat(idx); err == nil && !fi.IsDir() {
 		serveFile(w, r, idx, false)
+		return
+	}
+	// A request that names a file — it has an extension (/app.js, /img/x.png)
+	// or targets a known asset root — but reached the fallback simply doesn't
+	// exist: 404 it rather than masquerading the SPA index.html shell as the
+	// asset. Only extensionless client routes (/shop, /guide) fall through to
+	// index.html for client-side routing.
+	if filepath.Ext(clean) != "" || strings.HasPrefix(clean, "/img/") || strings.HasPrefix(clean, "/fonts/") {
+		http.NotFound(w, r)
 		return
 	}
 	serveFile(w, r, filepath.Join(root, "index.html"), true)

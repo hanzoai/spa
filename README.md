@@ -30,7 +30,33 @@ That's it. No flags, no config files, no Node.js.
 | `MULTI_APP` | `false` | Hostname-prefix routing to `/public/<app>/` |
 | `DEFAULT_APP` | `default` | Fallback app in multi-app mode |
 | `ALLOW_FRAMING` | `false` | Drop X-Frame-Options + frame-ancestors |
+| `SPA_PROTECT` | — | `iam` locks the whole site behind Hanzo IAM OIDC (see below) |
 | `SPA_*` | — | Templated into `/public/config.json` (see below) |
+
+## Protect mode
+
+Set `SPA_PROTECT=iam` and the entire site is locked behind Hanzo IAM
+(hanzo.id) OIDC — one env var, any static site. Anonymous visitors see only a
+minimal white sign-in gate; no real markup or asset byte is served until an
+allow-listed admin signs in via Authorization-Code + PKCE. Fail-closed
+everywhere. Unset = no gate (byte-for-byte the default behavior).
+
+| Var | Default | Description |
+|-----|---------|-------------|
+| `SPA_PROTECT` | — | `iam` enables the gate; empty/unset disables it |
+| `SPA_PROTECT_ALLOW` | — | Comma list of allowed emails, case-insensitive. **Required** when enabled — empty gates everyone |
+| `SPA_IAM_HOST` | `https://hanzo.id` | OIDC issuer (reuses the existing var) |
+| `SPA_PROTECT_CLIENT_ID` | — | Confidential OIDC client id |
+| `SPA_PROTECT_CLIENT_SECRET` | — | Client secret — env only, inject from a k8s Secret |
+| `SPA_PROTECT_REDIRECT` | derived | OIDC callback; default `https://<Host>/auth/callback` |
+| `SPA_PROTECT_COOKIE_SECRET` | random | HMAC key for the session cookie. Set it (from a Secret) in prod so sessions survive restarts |
+| `SPA_PROTECT_BRAND` | `Protected` | Optional wordmark on the gate |
+
+Reserved routes when enabled: `/health` (never gated), `/auth/login`,
+`/auth/callback`, `/auth/logout`. OIDC endpoints are discovered from
+`${SPA_IAM_HOST}/.well-known/openid-configuration` at startup. Identity is read
+from the userinfo endpoint (hanzo.id may sign id_tokens with post-quantum
+MLDSA65, which is not locally verifiable) over the access token.
 
 ## Runtime config
 
