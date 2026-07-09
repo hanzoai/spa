@@ -221,6 +221,36 @@ func TestProtectSessionCookies(t *testing.T) {
 	}
 }
 
+// TestProtectAuthedNoStore proves that authed passthrough responses carry
+// Cache-Control: no-store, so a shared CDN (Cloudflare) can never cache a
+// protected asset and later serve it to an anonymous visitor.
+func TestProtectAuthedNoStore(t *testing.T) {
+	p := testProtect()
+	// A handler that sets a cacheable header, mimicking the static file server.
+	cacheable := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		io.WriteString(w, realMarker)
+	})
+	srv := httptest.NewServer(p.wrap(cacheable))
+	defer srv.Close()
+
+	future := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+	req, _ := http.NewRequest("GET", srv.URL+"/app.js", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: p.sign([]byte("z@hanzo.ai|" + future))})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), realMarker) {
+		t.Fatalf("authed request must serve real content, got %q", body)
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("authed response Cache-Control = %q, want no-store (CDN must not cache protected content)", cc)
+	}
+}
+
 // --- end-to-end: login -> IAM -> callback -> session -> real content --------
 
 // fakeIAM serves discovery + token + userinfo, returning the given email.
