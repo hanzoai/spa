@@ -46,11 +46,19 @@ everywhere. Unset = no gate (byte-for-byte the default behavior).
 | `SPA_PROTECT` | — | `iam` enables the gate; empty/unset disables it |
 | `SPA_PROTECT_ALLOW` | — | Comma list of allowed emails, case-insensitive. **Required** when enabled — empty gates everyone |
 | `SPA_IAM_HOST` | `https://hanzo.id` | OIDC issuer (reuses the existing var) |
-| `SPA_PROTECT_CLIENT_ID` | — | Confidential OIDC client id |
-| `SPA_PROTECT_CLIENT_SECRET` | — | Client secret — env only, inject from a k8s Secret |
+| `SPA_PROTECT_CLIENT_ID` | — | Confidential OIDC client id (public) |
 | `SPA_PROTECT_REDIRECT` | derived | OIDC callback; default `https://<Host>/auth/callback` |
-| `SPA_PROTECT_COOKIE_SECRET` | random | HMAC key for the session cookie. Set it (from a Secret) in prod so sessions survive restarts |
 | `SPA_PROTECT_BRAND` | `Protected` | Optional wordmark on the gate |
+| `PROTECT_CLIENT_SECRET` | — | **Secret.** OIDC client secret — env only, inject from a k8s Secret. **No `SPA_` prefix** (see below) |
+| `PROTECT_COOKIE_SECRET` | random | **Secret.** HMAC key for the session cookie — inject from a k8s Secret in prod so sessions survive restarts. **No `SPA_` prefix** |
+
+> **Why the secrets drop the `SPA_` prefix:** every `SPA_*` env var is templated
+> into `/public/config.json`, which is **served to browsers**. So the two
+> secrets use non-`SPA_` names and are read server-side only. As defense in
+> depth, `writeRuntimeConfig` also refuses to template any `SPA_*` key whose
+> name contains `SECRET`, `PASSWORD`, or `PRIVATE` (but not `TOKEN` —
+> `SPA_COMMERCE_TOKEN` is a browser-safe Published token that must ship in
+> config.json).
 
 Reserved routes when enabled: `/health` (never gated), `/auth/login`,
 `/auth/callback`, `/auth/logout`. OIDC endpoints are discovered from
