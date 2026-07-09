@@ -13,15 +13,20 @@ package main
 // behavior is byte-for-byte identical. This keeps the protect concern in one
 // place (this file) — orthogonal to static serving.
 //
-// Config (env):
-//   SPA_PROTECT=iam                     enable (empty/unset = disabled)
+// Config (env). The SPA_ prefix means "browser-safe": writeRuntimeConfig
+// templates every SPA_* var into /public/config.json, which is SERVED to
+// visitors. So the two secrets deliberately DROP the SPA_ prefix — the Go
+// server reads them via os.Getenv directly and they never reach config.json.
+// (writeRuntimeConfig also drops any SPA_* key containing SECRET/PASSWORD/
+// PRIVATE as belt-and-suspenders.)
+//   SPA_PROTECT=iam                     enable (empty/unset = disabled)          [browser-safe]
 //   SPA_PROTECT_ALLOW=a@x,b@x           comma emails, case-insensitive; empty = gate everyone
-//   SPA_IAM_HOST=https://hanzo.id       OIDC issuer (reuses existing SPA_IAM_HOST)
-//   SPA_PROTECT_CLIENT_ID               confidential OIDC client id
-//   SPA_PROTECT_CLIENT_SECRET           client secret (env only, from k8s Secret)
+//   SPA_IAM_HOST=https://hanzo.id       OIDC issuer (reuses existing SPA_IAM_HOST) [browser-safe]
+//   SPA_PROTECT_CLIENT_ID               confidential OIDC client id (public)
 //   SPA_PROTECT_REDIRECT                optional; default https://<Host>/auth/callback
-//   SPA_PROTECT_COOKIE_SECRET           HMAC key for session cookie; random if unset
 //   SPA_PROTECT_BRAND                   optional wordmark on the gate (brand-neutral if unset)
+//   PROTECT_CLIENT_SECRET               *** SECRET *** OIDC client secret (env only, k8s Secret; NON-SPA_)
+//   PROTECT_COOKIE_SECRET               *** SECRET *** HMAC key for session cookie; random if unset (NON-SPA_)
 
 import (
 	"context"
@@ -75,16 +80,18 @@ func loadProtect() *protect {
 		return nil
 	}
 	p := &protect{
-		enabled:      true,
-		iamHost:      strings.TrimRight(envOr("SPA_IAM_HOST", "https://hanzo.id"), "/"),
-		clientID:     os.Getenv("SPA_PROTECT_CLIENT_ID"),
-		clientSecret: os.Getenv("SPA_PROTECT_CLIENT_SECRET"),
+		enabled:  true,
+		iamHost:  strings.TrimRight(envOr("SPA_IAM_HOST", "https://hanzo.id"), "/"),
+		clientID: os.Getenv("SPA_PROTECT_CLIENT_ID"),
+		// Secrets are intentionally NON-SPA_ so writeRuntimeConfig never
+		// templates them into the browser-served /public/config.json.
+		clientSecret: os.Getenv("PROTECT_CLIENT_SECRET"),
 		redirect:     strings.TrimSpace(os.Getenv("SPA_PROTECT_REDIRECT")),
 		brand:        strings.TrimSpace(os.Getenv("SPA_PROTECT_BRAND")),
 		allow:        parseAllow(os.Getenv("SPA_PROTECT_ALLOW")),
 		client:       &http.Client{Timeout: 10 * time.Second},
 	}
-	if s := os.Getenv("SPA_PROTECT_COOKIE_SECRET"); s != "" {
+	if s := os.Getenv("PROTECT_COOKIE_SECRET"); s != "" {
 		p.cookieSecret = []byte(s)
 	} else {
 		b := make([]byte, 32)
@@ -92,13 +99,13 @@ func loadProtect() *protect {
 			log.Fatalf("spa: protect: crypto/rand unavailable: %v", err)
 		}
 		p.cookieSecret = b
-		log.Print("spa: protect: SPA_PROTECT_COOKIE_SECRET unset — generated an ephemeral key; sessions will NOT survive a restart. Set it (from a k8s Secret) in production.")
+		log.Print("spa: protect: PROTECT_COOKIE_SECRET unset — generated an ephemeral key; sessions will NOT survive a restart. Set it (from a k8s Secret) in production.")
 	}
 
 	p.discover()
 
 	if p.clientID == "" || p.clientSecret == "" {
-		log.Print("spa: protect: SPA_PROTECT_CLIENT_ID/SPA_PROTECT_CLIENT_SECRET missing — sign-in cannot complete (fail-closed: everyone stays gated).")
+		log.Print("spa: protect: SPA_PROTECT_CLIENT_ID/PROTECT_CLIENT_SECRET missing — sign-in cannot complete (fail-closed: everyone stays gated).")
 	}
 	if len(p.allow) == 0 {
 		log.Print("spa: protect: SPA_PROTECT_ALLOW is empty — fail-closed: no user can pass the gate.")

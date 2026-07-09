@@ -146,6 +146,15 @@ func writeRuntimeConfig(root string, multiApp bool) error {
 		if !ok || !strings.HasPrefix(k, "SPA_") || v == "" {
 			continue
 		}
+		// config.json is served to browsers, so never template a secret into
+		// it. Server-side secrets already drop the SPA_ prefix (PROTECT_*), but
+		// this is defense-in-depth: any SPA_* key that looks like a secret is
+		// excluded. NOT *TOKEN — SPA_COMMERCE_TOKEN is an intentionally
+		// browser-safe Published token that must appear in config.json.
+		if isSensitiveKey(k) {
+			log.Printf("spa: refusing to template %s into browser config.json (looks secret)", k)
+			continue
+		}
 		vars[toCamel(strings.TrimPrefix(k, "SPA_"))] = parseValue(v)
 	}
 	if len(vars) == 0 {
@@ -205,6 +214,17 @@ func marshalSorted(m map[string]any) []byte {
 	}
 	out = append(out, '}', '\n')
 	return out
+}
+
+// isSensitiveKey reports whether an env var name looks like a secret that must
+// never be templated into the browser-served config.json. SECRET/PASSWORD/
+// PRIVATE only — deliberately NOT TOKEN, because SPA_COMMERCE_TOKEN is a
+// browser-safe Published token the SPA needs at runtime.
+func isSensitiveKey(k string) bool {
+	u := strings.ToUpper(k)
+	return strings.Contains(u, "SECRET") ||
+		strings.Contains(u, "PASSWORD") ||
+		strings.Contains(u, "PRIVATE")
 }
 
 // toCamel turns SPA_API_HOST → apiHost, SPA_CHAIN_ID → chainId.
