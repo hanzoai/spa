@@ -194,7 +194,15 @@ func (p *protect) wrap(next http.Handler) http.Handler {
 			return
 		}
 		if email, ok := p.session(r); ok && p.allowed(email) {
-			next.ServeHTTP(w, r) // authorized — serve the real content
+			// Authorized — serve the real content, but force Cache-Control:
+			// no-store so a SHARED cache (Cloudflare) never stores a protected
+			// asset and later hands it to an anonymous visitor. Without this, an
+			// authed admin's asset fetch (the static handler sets max-age=86400
+			// for css/js/img) would populate the CDN edge and leak content past
+			// the gate. The site is admin-only + low-traffic while protected, so
+			// dropping edge caching costs nothing; public launch (SPA_PROTECT
+			// unset) restores normal caching.
+			next.ServeHTTP(&noStoreWriter{ResponseWriter: w}, r)
 			return
 		}
 		// Anything else, any method, any extension → gate only. No real byte leaks.
@@ -204,6 +212,28 @@ func (p *protect) wrap(next http.Handler) http.Handler {
 
 func (p *protect) allowed(email string) bool {
 	return p.allow[strings.ToLower(strings.TrimSpace(email))]
+}
+
+// noStoreWriter forces Cache-Control: no-store on the wrapped response. It wraps
+// the authed passthrough so a shared CDN never caches protected content and then
+// serves it to an anonymous visitor. The override is applied at WriteHeader time
+// (after the static handler set its own Cache-Control), so no-store always wins.
+type noStoreWriter struct {
+	http.ResponseWriter
+	wrote bool
+}
+
+func (w *noStoreWriter) WriteHeader(code int) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.wrote = true
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *noStoreWriter) Write(b []byte) (int, error) {
+	if !w.wrote {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(b)
 }
 
 // handleLogin starts the Authorization-Code + PKCE flow: mint verifier/state,
