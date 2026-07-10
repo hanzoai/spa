@@ -251,6 +251,100 @@ func TestProtectAuthedNoStore(t *testing.T) {
 	}
 }
 
+// TestProtectDeniedGate proves the unauthorized state names the rejected account
+// and offers sign-out (not a dead end): its primary action is /auth/logout, NOT
+// /auth/login (which would just re-authorize the same rejected SSO account).
+func TestProtectDeniedGate(t *testing.T) {
+	p := testProtect()
+	h := p.gateHTML(gateView{deniedEmail: "evil@example.com"})
+	if !strings.Contains(h, "evil@example.com") {
+		t.Error("denied gate must name the rejected account")
+	}
+	if !strings.Contains(h, `href="/auth/logout"`) {
+		t.Error("denied gate must offer sign-out (/auth/logout)")
+	}
+	if strings.Contains(h, `href="/auth/login"`) {
+		t.Error("denied gate primary action must be sign-out, not sign-in")
+	}
+	if !strings.Contains(h, "spa-protect-gate") {
+		t.Error("denied page must still be the gate shell")
+	}
+}
+
+// TestProtectLogoutClearsAndEndSession proves /auth/logout clears BOTH cookies and
+// bounces the browser through the IdP end-session endpoint (so the SSO session
+// drops and the next sign-in isn't silently re-authorized as the rejected account).
+func TestProtectLogoutClearsAndEndSession(t *testing.T) {
+	p := testProtect()
+	p.endSessionEndpoint = "https://iam.example/v1/iam/oauth/logout"
+	srv := httptest.NewServer(p.wrap(realHandler()))
+	defer srv.Close()
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, _ := http.NewRequest("GET", srv.URL+"/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "x"})
+	req.AddCookie(&http.Cookie{Name: authCookie, Value: "y"})
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("logout should 302, got %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.HasPrefix(loc, p.endSessionEndpoint) {
+		t.Errorf("logout must redirect to the IdP end-session endpoint, got %q", loc)
+	}
+	var clearedSession, clearedAuth bool
+	for _, c := range resp.Cookies() {
+		if c.Name == sessionCookie && (c.MaxAge < 0 || c.Value == "") {
+			clearedSession = true
+		}
+		if c.Name == authCookie && (c.MaxAge < 0 || c.Value == "") {
+			clearedAuth = true
+		}
+	}
+	if !clearedSession || !clearedAuth {
+		t.Errorf("logout must clear both cookies (session=%v auth=%v)", clearedSession, clearedAuth)
+	}
+}
+
+// TestProtectAuthedInjectsSignOut proves an authorized HTML document gets the
+// floating sign-out link injected before </body>, still contains the real content,
+// and stays no-store.
+func TestProtectAuthedInjectsSignOut(t *testing.T) {
+	p := testProtect()
+	htmlHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, "<html><body><h1>"+realMarker+"</h1></body></html>")
+	})
+	srv := httptest.NewServer(p.wrap(htmlHandler))
+	defer srv.Close()
+
+	future := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+	req, _ := http.NewRequest("GET", srv.URL+"/", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: p.sign([]byte("z@hanzo.ai|" + future))})
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	s := string(body)
+	if !strings.Contains(s, realMarker) {
+		t.Fatal("authed html must still contain the real content")
+	}
+	if !strings.Contains(s, `href="/auth/logout"`) {
+		t.Error("authed html must have the injected sign-out link")
+	}
+	if strings.Index(s, "/auth/logout") > strings.LastIndex(s, "</body>") {
+		t.Error("sign-out link must be injected BEFORE </body>")
+	}
+	if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("authed response Cache-Control = %q, want no-store", cc)
+	}
+}
+
 // --- end-to-end: login -> IAM -> callback -> session -> real content --------
 
 // fakeIAM serves discovery + token + userinfo, returning the given email.
