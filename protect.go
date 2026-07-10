@@ -52,6 +52,7 @@ import (
 const (
 	sessionCookie = "spa_session" // signed {email|exp} — proves an authorized session
 	authCookie    = "spa_auth"    // signed {verifier|state} — short-lived PKCE transaction
+	idTokenCookie = "spa_id"      // the IdP's raw id_token — kept ONLY as id_token_hint for RP-initiated logout
 	sessionTTL    = 8 * time.Hour
 	authTTL       = 10 * time.Minute
 )
@@ -396,11 +397,18 @@ func (p *protect) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email, err := p.exchange(r.Context(), code, verifier, p.redirectURI(r))
+	email, idToken, err := p.exchange(r.Context(), code, verifier, p.redirectURI(r))
 	if err != nil {
 		log.Printf("spa: protect: token/userinfo exchange failed: %v", err)
 		p.serveGate(w, http.StatusForbidden, "Sign-in failed. Please try again.")
 		return
+	}
+	// Retain the IdP id_token as id_token_hint for RP-initiated logout — set for
+	// BOTH allowed AND denied users, so the denied gate's "sign out & try another
+	// account" can actually drop the IdP SSO session. httpOnly/Secure; it is opaque
+	// to us and NEVER trusted for authorization (identity is the userinfo email).
+	if idToken != "" {
+		p.setCookie(w, idTokenCookie, idToken, int(sessionTTL.Seconds()))
 	}
 	if !p.allowed(email) {
 		log.Printf("spa: protect: denied non-allow-listed email %q", email)
@@ -415,19 +423,27 @@ func (p *protect) handleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *protect) handleLogout(w http.ResponseWriter, r *http.Request) {
-	// Clear BOTH cookies (our session + any in-flight PKCE) so no local trace
-	// remains.
+	// Read the stored id_token BEFORE clearing — it's the id_token_hint below.
+	idToken := ""
+	if c, err := r.Cookie(idTokenCookie); err == nil {
+		idToken = c.Value
+	}
+	// Clear ALL of our cookies (session + in-flight PKCE + the id_token hint).
 	p.clearCookie(w, sessionCookie)
 	p.clearCookie(w, authCookie)
+	p.clearCookie(w, idTokenCookie)
 	w.Header().Set("Cache-Control", "no-store")
-	// RP-initiated logout: bounce the browser through the IdP end-session endpoint
-	// so hanzo.id's OWN SSO session drops too — otherwise the next sign-in would be
-	// silently re-authorized as the SAME (possibly rejected) account, an infinite
-	// dead-end. It returns to our gate via post_logout_redirect_uri; the user then
-	// clicks "Sign in" and is prompted for fresh credentials.
+
 	gate := "https://" + r.Host + "/"
-	if p.endSessionEndpoint != "" {
+	// RP-initiated logout: bounce through the IdP end-session endpoint so the IdP's
+	// OWN SSO session drops too — otherwise the next sign-in is silently re-authorized
+	// as the same (possibly rejected) account, an infinite dead-end. hanzo.id REQUIRES
+	// id_token_hint and returns raw JSON ({"msg":"Missing parameter: id_token_hint"})
+	// without it, so we take the IdP round-trip ONLY when we hold the hint;
+	// post_logout_redirect_uri brings the browser back to our white gate.
+	if idToken != "" && p.endSessionEndpoint != "" {
 		q := url.Values{}
+		q.Set("id_token_hint", idToken)
 		q.Set("post_logout_redirect_uri", gate)
 		if p.clientID != "" {
 			q.Set("client_id", p.clientID)
@@ -435,6 +451,9 @@ func (p *protect) handleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, p.endSessionEndpoint+"?"+q.Encode(), http.StatusFound)
 		return
 	}
+	// No id_token (expired, or too large to have stored) → NEVER strand the user on
+	// the IdP's raw-JSON error. Our cookies are already cleared, so just go home to
+	// the gate; signing in there re-authenticates cleanly.
 	http.Redirect(w, r, gate, http.StatusFound)
 }
 
@@ -448,7 +467,7 @@ func (p *protect) handleLogout(w http.ResponseWriter, r *http.Request) {
 // IdP's userinfo endpoint over a server-to-server TLS channel that already
 // authenticates the issuer, making the response the authoritative identity with
 // minimal crypto surface. This is the robust choice.
-func (p *protect) exchange(ctx context.Context, code, verifier, redirect string) (string, error) {
+func (p *protect) exchange(ctx context.Context, code, verifier, redirect string) (string, string, error) {
 	form := url.Values{}
 	form.Set("grant_type", "authorization_code")
 	form.Set("code", code)
@@ -459,19 +478,19 @@ func (p *protect) exchange(ctx context.Context, code, verifier, redirect string)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.tokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("token endpoint HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+		return "", "", fmt.Errorf("token endpoint HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var tok struct {
 		AccessToken string `json:"access_token"`
@@ -480,13 +499,13 @@ func (p *protect) exchange(ctx context.Context, code, verifier, redirect string)
 		Error       string `json:"error"`
 	}
 	if err := json.Unmarshal(body, &tok); err != nil {
-		return "", fmt.Errorf("token response decode: %w", err)
+		return "", "", fmt.Errorf("token response decode: %w", err)
 	}
 	if tok.Error != "" {
-		return "", fmt.Errorf("token endpoint error: %s", tok.Error)
+		return "", "", fmt.Errorf("token endpoint error: %s", tok.Error)
 	}
 	if tok.AccessToken == "" {
-		return "", fmt.Errorf("token endpoint returned no access_token")
+		return "", "", fmt.Errorf("token endpoint returned no access_token")
 	}
 	// Prefer userinfo (authoritative). Fall back to the id_token's email claim
 	// when the IdP's userinfo omits it (e.g. Casdoor scope-filters email out of
@@ -498,10 +517,10 @@ func (p *protect) exchange(ctx context.Context, code, verifier, redirect string)
 	email, err := p.userinfo(ctx, tok.AccessToken)
 	if (err != nil || email == "") && tok.IDToken != "" {
 		if e := emailFromJWT(tok.IDToken); e != "" {
-			return e, nil
+			return e, tok.IDToken, nil
 		}
 	}
-	return email, err
+	return email, tok.IDToken, err
 }
 
 // emailFromJWT decodes (without verifying) the payload of a compact JWS and
