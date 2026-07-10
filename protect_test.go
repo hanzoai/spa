@@ -271,9 +271,10 @@ func TestProtectDeniedGate(t *testing.T) {
 	}
 }
 
-// TestProtectLogoutClearsAndEndSession proves /auth/logout clears BOTH cookies and
-// bounces the browser through the IdP end-session endpoint (so the SSO session
-// drops and the next sign-in isn't silently re-authorized as the rejected account).
+// TestProtectLogoutClearsAndEndSession proves /auth/logout clears ALL cookies and
+// bounces the browser through the IdP end-session endpoint WITH id_token_hint +
+// post_logout_redirect_uri (hanzo.id requires the hint and 400s raw JSON without
+// it), so the SSO session drops and the browser round-trips back to the gate.
 func TestProtectLogoutClearsAndEndSession(t *testing.T) {
 	p := testProtect()
 	p.endSessionEndpoint = "https://iam.example/v1/iam/oauth/logout"
@@ -284,6 +285,7 @@ func TestProtectLogoutClearsAndEndSession(t *testing.T) {
 	req, _ := http.NewRequest("GET", srv.URL+"/auth/logout", nil)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "x"})
 	req.AddCookie(&http.Cookie{Name: authCookie, Value: "y"})
+	req.AddCookie(&http.Cookie{Name: idTokenCookie, Value: "ID.TOKEN.JWT"})
 	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -292,20 +294,53 @@ func TestProtectLogoutClearsAndEndSession(t *testing.T) {
 	if resp.StatusCode != http.StatusFound {
 		t.Fatalf("logout should 302, got %d", resp.StatusCode)
 	}
-	if loc := resp.Header.Get("Location"); !strings.HasPrefix(loc, p.endSessionEndpoint) {
+	loc := resp.Header.Get("Location")
+	if !strings.HasPrefix(loc, p.endSessionEndpoint) {
 		t.Errorf("logout must redirect to the IdP end-session endpoint, got %q", loc)
 	}
-	var clearedSession, clearedAuth bool
+	if !strings.Contains(loc, "id_token_hint=ID.TOKEN.JWT") {
+		t.Errorf("logout must pass id_token_hint, got %q", loc)
+	}
+	if !strings.Contains(loc, "post_logout_redirect_uri=") {
+		t.Errorf("logout must pass post_logout_redirect_uri, got %q", loc)
+	}
+	cleared := map[string]bool{}
 	for _, c := range resp.Cookies() {
-		if c.Name == sessionCookie && (c.MaxAge < 0 || c.Value == "") {
-			clearedSession = true
-		}
-		if c.Name == authCookie && (c.MaxAge < 0 || c.Value == "") {
-			clearedAuth = true
+		if c.MaxAge < 0 || c.Value == "" {
+			cleared[c.Name] = true
 		}
 	}
-	if !clearedSession || !clearedAuth {
-		t.Errorf("logout must clear both cookies (session=%v auth=%v)", clearedSession, clearedAuth)
+	if !cleared[sessionCookie] || !cleared[authCookie] || !cleared[idTokenCookie] {
+		t.Errorf("logout must clear session+auth+id cookies, got %v", cleared)
+	}
+}
+
+// TestProtectLogoutNoIDTokenGoesHome proves that WITHOUT an id_token the logout
+// never hits the IdP end-session endpoint (which would 400 raw JSON and strand the
+// user) — it clears cookies and redirects home to the gate instead.
+func TestProtectLogoutNoIDTokenGoesHome(t *testing.T) {
+	p := testProtect()
+	p.endSessionEndpoint = "https://iam.example/v1/iam/oauth/logout"
+	srv := httptest.NewServer(p.wrap(realHandler()))
+	defer srv.Close()
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, _ := http.NewRequest("GET", srv.URL+"/auth/logout", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: "x"}) // no id_token cookie
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("logout should 302, got %d", resp.StatusCode)
+	}
+	loc := resp.Header.Get("Location")
+	if strings.Contains(loc, p.endSessionEndpoint) {
+		t.Errorf("without id_token, logout must NOT hit end-session (raw-JSON dead-end), got %q", loc)
+	}
+	if !strings.HasSuffix(loc, "/") {
+		t.Errorf("without id_token, logout must redirect home, got %q", loc)
 	}
 }
 
