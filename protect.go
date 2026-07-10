@@ -350,6 +350,7 @@ func (p *protect) exchange(ctx context.Context, code, verifier, redirect string)
 	}
 	var tok struct {
 		AccessToken string `json:"access_token"`
+		IDToken     string `json:"id_token"`
 		TokenType   string `json:"token_type"`
 		Error       string `json:"error"`
 	}
@@ -362,7 +363,41 @@ func (p *protect) exchange(ctx context.Context, code, verifier, redirect string)
 	if tok.AccessToken == "" {
 		return "", fmt.Errorf("token endpoint returned no access_token")
 	}
-	return p.userinfo(ctx, tok.AccessToken)
+	// Prefer userinfo (authoritative). Fall back to the id_token's email claim
+	// when the IdP's userinfo omits it (e.g. Casdoor scope-filters email out of
+	// /userinfo even though the token was minted with the email scope). The
+	// id_token rode the SAME TLS-authenticated token-endpoint response, so its
+	// claims are as trustworthy as userinfo for the email; we decode (not
+	// signature-verify) the payload — verification is unnecessary and would drag
+	// in the IdP's ML-DSA id_token signing alg the Go stdlib can't check.
+	email, err := p.userinfo(ctx, tok.AccessToken)
+	if (err != nil || email == "") && tok.IDToken != "" {
+		if e := emailFromJWT(tok.IDToken); e != "" {
+			return e, nil
+		}
+	}
+	return email, err
+}
+
+// emailFromJWT decodes (without verifying) the payload of a compact JWS and
+// returns its "email" claim, or "" if absent/malformed. Trust comes from the
+// caller having fetched the token over an authenticated TLS channel to the IdP.
+func emailFromJWT(jwt string) string {
+	parts := strings.Split(jwt, ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Email string `json:"email"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(claims.Email)
 }
 
 func (p *protect) userinfo(ctx context.Context, accessToken string) (string, error) {
