@@ -29,6 +29,7 @@ package main
 //   PROTECT_COOKIE_SECRET               *** SECRET *** HMAC key for session cookie; random if unset (NON-SPA_)
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -71,10 +72,11 @@ type protect struct {
 	cookieSecret []byte
 	client       *http.Client
 
-	authorizeEndpoint string
-	tokenEndpoint     string
-	userinfoEndpoint  string
-	jwksURI           string
+	authorizeEndpoint  string
+	tokenEndpoint      string
+	userinfoEndpoint   string
+	jwksURI            string
+	endSessionEndpoint string // RP-initiated logout (browser-facing, public)
 }
 
 // loadProtect reads env and, when SPA_PROTECT=iam, returns a configured gate.
@@ -147,6 +149,9 @@ func (p *protect) discover() {
 	p.tokenEndpoint = srv + "/v1/iam/oauth/token"
 	p.userinfoEndpoint = srv + "/v1/iam/oauth/userinfo"
 	p.jwksURI = srv + "/v1/iam/.well-known/jwks"
+	// end-session is BROWSER-facing (the user's browser is redirected to it to
+	// drop the IdP SSO session), so it always stays on the PUBLIC host.
+	p.endSessionEndpoint = p.iamHost + "/v1/iam/oauth/logout"
 
 	// Discover from the server-side host so a public-edge ban can't break startup.
 	// Casdoor returns its PUBLIC origin URLs in the doc, so authorize stays public;
@@ -166,6 +171,7 @@ func (p *protect) discover() {
 		TokenEndpoint         string `json:"token_endpoint"`
 		UserinfoEndpoint      string `json:"userinfo_endpoint"`
 		JwksURI               string `json:"jwks_uri"`
+		EndSessionEndpoint    string `json:"end_session_endpoint"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&d); err != nil {
 		log.Printf("spa: protect: OIDC discovery decode failed (%v) — using gateway defaults", err)
@@ -185,6 +191,9 @@ func (p *protect) discover() {
 	}
 	if d.JwksURI != "" {
 		p.jwksURI = onHost(d.JwksURI, srv)
+	}
+	if d.EndSessionEndpoint != "" {
+		p.endSessionEndpoint = d.EndSessionEndpoint // browser-facing → keep public host
 	}
 	log.Printf("spa: protect: OIDC endpoints — authorize=%s token=%s userinfo=%s", p.authorizeEndpoint, p.tokenEndpoint, p.userinfoEndpoint)
 }
@@ -240,7 +249,13 @@ func (p *protect) wrap(next http.Handler) http.Handler {
 			// the gate. The site is admin-only + low-traffic while protected, so
 			// dropping edge caching costs nothing; public launch (SPA_PROTECT
 			// unset) restores normal caching.
-			next.ServeHTTP(&noStoreWriter{ResponseWriter: w}, r)
+			//
+			// injectWriter also drops an unobtrusive floating "Sign out" link into
+			// authorized HTML documents so any user can switch accounts without the
+			// site needing to know about protect mode (reusable, site-agnostic).
+			iw := &injectWriter{ResponseWriter: w, snippet: signOutSnippet}
+			next.ServeHTTP(iw, r)
+			iw.finalize()
 			return
 		}
 		// Anything else, any method, any extension → gate only. No real byte leaks.
@@ -252,26 +267,80 @@ func (p *protect) allowed(email string) bool {
 	return p.allow[strings.ToLower(strings.TrimSpace(email))]
 }
 
-// noStoreWriter forces Cache-Control: no-store on the wrapped response. It wraps
-// the authed passthrough so a shared CDN never caches protected content and then
-// serves it to an anonymous visitor. The override is applied at WriteHeader time
-// (after the static handler set its own Cache-Control), so no-store always wins.
-type noStoreWriter struct {
+// signOutSnippet is the unobtrusive floating "Sign out" affordance injected into
+// authorized HTML so any signed-in user can switch accounts — no site cooperation
+// needed (reusable, site-agnostic). Self-contained inline styles, fixed bottom-right.
+var signOutSnippet = []byte(`<a href="/auth/logout" rel="nofollow" aria-label="Sign out" ` +
+	`style="position:fixed;bottom:14px;right:14px;z-index:2147483000;` +
+	`font:500 12px/1 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;` +
+	`color:#111;background:rgba(255,255,255,.92);border:1px solid rgba(0,0,0,.14);` +
+	`border-radius:8px;padding:8px 12px;text-decoration:none;box-shadow:0 1px 3px rgba(0,0,0,.12);opacity:.85">` +
+	`Sign out</a>`)
+
+// injectWriter forces Cache-Control: no-store on every authorized response (so a
+// shared CDN never caches protected content and later serves it to an anonymous
+// visitor) AND, for 200 text/html documents, injects `snippet` before </body> so a
+// signed-in user always has a sign-out affordance. Non-HTML / non-200 responses
+// stream through untouched (no buffering).
+type injectWriter struct {
 	http.ResponseWriter
-	wrote bool
+	snippet []byte
+	started bool
+	isHTML  bool
+	status  int
+	buf     []byte
 }
 
-func (w *noStoreWriter) WriteHeader(code int) {
+func (w *injectWriter) WriteHeader(code int) {
+	if w.started {
+		return
+	}
+	w.started = true
 	w.Header().Set("Cache-Control", "no-store")
-	w.wrote = true
+	if code == http.StatusOK && strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") {
+		w.isHTML = true
+		w.status = code
+		w.Header().Del("Content-Length") // recomputed after injection
+		return                           // defer the real WriteHeader to finalize()
+	}
 	w.ResponseWriter.WriteHeader(code)
 }
 
-func (w *noStoreWriter) Write(b []byte) (int, error) {
-	if !w.wrote {
+func (w *injectWriter) Write(b []byte) (int, error) {
+	if !w.started {
 		w.WriteHeader(http.StatusOK)
 	}
+	if w.isHTML {
+		w.buf = append(w.buf, b...)
+		return len(b), nil
+	}
 	return w.ResponseWriter.Write(b)
+}
+
+// finalize must run after the wrapped handler returns: for a buffered HTML document
+// it injects the snippet and flushes; a no-op for anything streamed through.
+func (w *injectWriter) finalize() {
+	if !w.isHTML {
+		return
+	}
+	out := injectBefore(w.buf, []byte("</body>"), w.snippet)
+	w.Header().Set("Content-Length", strconv.Itoa(len(out)))
+	w.ResponseWriter.WriteHeader(w.status)
+	w.ResponseWriter.Write(out)
+}
+
+// injectBefore inserts snip before the LAST case-insensitive occurrence of marker
+// in body (appends if marker is absent).
+func injectBefore(body, marker, snip []byte) []byte {
+	i := bytes.LastIndex(bytes.ToLower(body), bytes.ToLower(marker))
+	if i < 0 {
+		return append(body, snip...)
+	}
+	out := make([]byte, 0, len(body)+len(snip))
+	out = append(out, body[:i]...)
+	out = append(out, snip...)
+	out = append(out, body[i:]...)
+	return out
 }
 
 // handleLogin starts the Authorization-Code + PKCE flow: mint verifier/state,
@@ -335,7 +404,7 @@ func (p *protect) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if !p.allowed(email) {
 		log.Printf("spa: protect: denied non-allow-listed email %q", email)
-		p.serveGate(w, http.StatusForbidden, "That account is not authorized.")
+		p.serveDenied(w, email)
 		return
 	}
 
@@ -346,9 +415,27 @@ func (p *protect) handleCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *protect) handleLogout(w http.ResponseWriter, r *http.Request) {
+	// Clear BOTH cookies (our session + any in-flight PKCE) so no local trace
+	// remains.
 	p.clearCookie(w, sessionCookie)
+	p.clearCookie(w, authCookie)
 	w.Header().Set("Cache-Control", "no-store")
-	http.Redirect(w, r, "/", http.StatusFound)
+	// RP-initiated logout: bounce the browser through the IdP end-session endpoint
+	// so hanzo.id's OWN SSO session drops too — otherwise the next sign-in would be
+	// silently re-authorized as the SAME (possibly rejected) account, an infinite
+	// dead-end. It returns to our gate via post_logout_redirect_uri; the user then
+	// clicks "Sign in" and is prompted for fresh credentials.
+	gate := "https://" + r.Host + "/"
+	if p.endSessionEndpoint != "" {
+		q := url.Values{}
+		q.Set("post_logout_redirect_uri", gate)
+		if p.clientID != "" {
+			q.Set("client_id", p.clientID)
+		}
+		http.Redirect(w, r, p.endSessionEndpoint+"?"+q.Encode(), http.StatusFound)
+		return
+	}
+	http.Redirect(w, r, gate, http.StatusFound)
 }
 
 // exchange trades the authorization code for tokens (client_secret_post +
@@ -561,28 +648,55 @@ func randToken(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// gateView selects which gate to render. deniedEmail non-empty → the "not
+// authorized" variant (shows the rejected account + a working sign-out), so the
+// unauthorized state is never a dead end.
+type gateView struct {
+	note        string
+	deniedEmail string
+}
+
 // serveGate writes the self-contained white sign-in page. It reuses the shared
 // security headers (frame-ancestors 'none', nosniff, HSTS) and is never cached,
 // so a CDN can't hand one user's gate/content to another.
 func (p *protect) serveGate(w http.ResponseWriter, status int, note string) {
+	p.renderGate(w, status, gateView{note: note})
+}
+
+// serveDenied renders the "signed in as X — not on the allow list" gate whose
+// primary action signs the user OUT (local cookies + IdP session) and returns to
+// the gate, so a rejected account can switch to an allowed one.
+func (p *protect) serveDenied(w http.ResponseWriter, email string) {
+	p.renderGate(w, http.StatusForbidden, gateView{deniedEmail: email})
+}
+
+func (p *protect) renderGate(w http.ResponseWriter, status int, v gateView) {
 	setSecurityHeaders(w, false)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
-	io.WriteString(w, p.gateHTML(note))
+	io.WriteString(w, p.gateHTML(v))
 }
 
 // gateHTML is fully self-contained: inline CSS, no external refs, no real
 // markup or asset bytes from the protected site. The id="spa-protect-gate"
 // hook is a stable marker for tests and ops.
-func (p *protect) gateHTML(note string) string {
+func (p *protect) gateHTML(v gateView) string {
 	brand := "Protected"
 	if p.brand != "" {
 		brand = p.brand
 	}
+	title := "Sign in"
+	sub := "Please sign in to continue."
+	action := `<a class="btn" href="/auth/login" rel="nofollow">Sign in</a>`
+	if v.deniedEmail != "" {
+		title = "Not authorized"
+		sub = `Signed in as <b>` + html.EscapeString(v.deniedEmail) + `</b> — that account isn't on the allow&#8209;list.`
+		action = `<a class="btn" href="/auth/logout" rel="nofollow">Sign out &amp; try another account</a>`
+	}
 	noteHTML := ""
-	if note != "" {
-		noteHTML = `<p class="note">` + html.EscapeString(note) + `</p>`
+	if v.note != "" {
+		noteHTML = `<p class="note">` + html.EscapeString(v.note) + `</p>`
 	}
 	return `<!doctype html>
 <html lang="en">
@@ -590,7 +704,7 @@ func (p *protect) gateHTML(note string) string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>Sign in</title>
+<title>` + html.EscapeString(title) + `</title>
 <style>
 :root{color-scheme:light}
 *{box-sizing:border-box}
@@ -600,7 +714,8 @@ font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,s
 color:#111;-webkit-font-smoothing:antialiased}
 main{width:100%;max-width:340px;padding:32px;text-align:center}
 .mark{font-size:22px;font-weight:600;letter-spacing:-.01em;margin:0 0 4px}
-.sub{font-size:14px;color:#666;margin:0 0 28px}
+.sub{font-size:14px;color:#666;margin:0 0 28px;line-height:1.45}
+.sub b{color:#111;font-weight:600}
 a.btn{display:inline-block;width:100%;padding:12px 16px;border-radius:10px;
 background:#111;color:#fff;text-decoration:none;font-size:15px;font-weight:500;
 transition:opacity .15s ease}
@@ -616,8 +731,8 @@ a.btn:hover{opacity:.85}
 <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
 </svg>
 <h1 class="mark">` + html.EscapeString(brand) + `</h1>
-<p class="sub">Please sign in to continue.</p>
-<a class="btn" href="/auth/login" rel="nofollow">Sign in</a>
+<p class="sub">` + sub + `</p>
+` + action + `
 ` + noteHTML + `
 </main>
 </body>
