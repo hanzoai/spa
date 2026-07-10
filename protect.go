@@ -62,6 +62,11 @@ type protect struct {
 	clientSecret string
 	redirect     string // SPA_PROTECT_REDIRECT override; "" = derive per-request
 	brand        string
+	// internalHost (SPA_IAM_INTERNAL) is an in-cluster IAM base URL used for the
+	// SERVER-SIDE calls (discovery, token, userinfo) so they bypass the public
+	// CDN/WAF in front of the IdP — no edge rate-limit/IP-ban, no edge TLS. The
+	// browser-facing authorize endpoint always stays on the public SPA_IAM_HOST.
+	internalHost string
 	allow        map[string]bool // lowercased allowed emails; empty = nobody passes
 	cookieSecret []byte
 	client       *http.Client
@@ -88,6 +93,7 @@ func loadProtect() *protect {
 		clientSecret: os.Getenv("PROTECT_CLIENT_SECRET"),
 		redirect:     strings.TrimSpace(os.Getenv("SPA_PROTECT_REDIRECT")),
 		brand:        strings.TrimSpace(os.Getenv("SPA_PROTECT_BRAND")),
+		internalHost: strings.TrimRight(strings.TrimSpace(os.Getenv("SPA_IAM_INTERNAL")), "/"),
 		allow:        parseAllow(os.Getenv("SPA_PROTECT_ALLOW")),
 		client:       &http.Client{Timeout: 10 * time.Second},
 	}
@@ -131,12 +137,21 @@ func parseAllow(s string) map[string]bool {
 // zoo.id. (Raw upstream Casdoor paths like /login/oauth/authorize are NOT
 // reachable through the gateway, so they would be a broken fallback.)
 func (p *protect) discover() {
+	// srv = host for SERVER-SIDE calls (token/userinfo/discovery): internal when
+	// set, else the public host. authorize is ALWAYS public (the browser hits it).
+	srv := p.iamHost
+	if p.internalHost != "" {
+		srv = p.internalHost
+	}
 	p.authorizeEndpoint = p.iamHost + "/v1/iam/oauth/authorize"
-	p.tokenEndpoint = p.iamHost + "/v1/iam/oauth/token"
-	p.userinfoEndpoint = p.iamHost + "/v1/iam/oauth/userinfo"
-	p.jwksURI = p.iamHost + "/v1/iam/.well-known/jwks"
+	p.tokenEndpoint = srv + "/v1/iam/oauth/token"
+	p.userinfoEndpoint = srv + "/v1/iam/oauth/userinfo"
+	p.jwksURI = srv + "/v1/iam/.well-known/jwks"
 
-	resp, err := p.client.Get(p.iamHost + "/.well-known/openid-configuration")
+	// Discover from the server-side host so a public-edge ban can't break startup.
+	// Casdoor returns its PUBLIC origin URLs in the doc, so authorize stays public;
+	// we pin token/userinfo back onto srv (internal) below.
+	resp, err := p.client.Get(srv + "/.well-known/openid-configuration")
 	if err != nil {
 		log.Printf("spa: protect: OIDC discovery failed (%v) — using gateway defaults", err)
 		return
@@ -156,19 +171,42 @@ func (p *protect) discover() {
 		log.Printf("spa: protect: OIDC discovery decode failed (%v) — using gateway defaults", err)
 		return
 	}
+	// authorize stays PUBLIC (browser-facing). token/userinfo/jwks are pinned to
+	// srv (internal when SPA_IAM_INTERNAL is set) by swapping the discovered URL's
+	// host — so server-side calls never traverse the public edge.
 	if d.AuthorizationEndpoint != "" {
 		p.authorizeEndpoint = d.AuthorizationEndpoint
 	}
 	if d.TokenEndpoint != "" {
-		p.tokenEndpoint = d.TokenEndpoint
+		p.tokenEndpoint = onHost(d.TokenEndpoint, srv)
 	}
 	if d.UserinfoEndpoint != "" {
-		p.userinfoEndpoint = d.UserinfoEndpoint
+		p.userinfoEndpoint = onHost(d.UserinfoEndpoint, srv)
 	}
 	if d.JwksURI != "" {
-		p.jwksURI = d.JwksURI
+		p.jwksURI = onHost(d.JwksURI, srv)
 	}
 	log.Printf("spa: protect: OIDC endpoints — authorize=%s token=%s userinfo=%s", p.authorizeEndpoint, p.tokenEndpoint, p.userinfoEndpoint)
+}
+
+// onHost returns rawURL with its scheme+host replaced by base's (path/query
+// preserved). Used to pin discovered token/userinfo endpoints onto the internal
+// IAM host. Returns rawURL unchanged if base or rawURL is unparseable.
+func onHost(rawURL, base string) string {
+	if base == "" {
+		return rawURL
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	b, err := url.Parse(base)
+	if err != nil || b.Host == "" {
+		return rawURL
+	}
+	u.Scheme = b.Scheme
+	u.Host = b.Host
+	return u.String()
 }
 
 // wrap installs the gate in front of next. Nil/disabled → next unchanged, so
