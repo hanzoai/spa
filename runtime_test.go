@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -184,6 +185,62 @@ func TestResolveAndServeNextExport(t *testing.T) {
 		body, _ := io.ReadAll(r.Body); r.Body.Close()
 		if string(body) != want {
 			t.Errorf("%s: got %q want %q", path, body, want)
+		}
+	}
+}
+
+// A missing subresource must 404. The fallback answers ROUTES; answering an
+// <img src> with the HTML shell under a 200 makes a broken icon and a working
+// one indistinguishable to anything that reads a status code — which is how
+// seven missing icons shipped to app.lux.finance unnoticed.
+func TestMissingAssetIs404(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("ROOT"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "images"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "images", "real.svg"), []byte("<svg/>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewServer(spaHandler(dir))
+	defer srv.Close()
+
+	cases := []struct {
+		path       string
+		wantStatus int
+		wantType   string // prefix match; "" means don't care
+		why        string
+	}{
+		{"/images/real.svg", 200, "image/svg+xml", "the asset exists — positive control"},
+		{"/images/icons/lux.svg", 404, "", "missing image must not answer as the HTML shell"},
+		{"/assets/index-deadbeef.js", 404, "", "missing script must not answer as the HTML shell"},
+		{"/styles/app.css", 404, "", "missing stylesheet must not answer as the HTML shell"},
+		{"/fonts/geist.woff2", 404, "", "missing font must not answer as the HTML shell"},
+		{"/data/vaults.json", 404, "", "missing data file must not answer as the HTML shell"},
+		{"/vaults", 200, "text/html", "a client-side route still falls back to index.html"},
+		{"/governance/proposals", 200, "text/html", "a nested route still falls back"},
+		{"/users/z@hanzo.ai", 200, "text/html", "a route whose last element ends in a dotted token is NOT an asset"},
+	}
+	for _, c := range cases {
+		r, err := http.Get(srv.URL + c.path)
+		if err != nil {
+			t.Fatalf("%s: %v", c.path, err)
+		}
+		body, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		if r.StatusCode != c.wantStatus {
+			t.Errorf("GET %s = %d, want %d (%s)", c.path, r.StatusCode, c.wantStatus, c.why)
+		}
+		if c.wantType != "" && !strings.HasPrefix(r.Header.Get("Content-Type"), c.wantType) {
+			t.Errorf("GET %s Content-Type = %q, want prefix %q (%s)",
+				c.path, r.Header.Get("Content-Type"), c.wantType, c.why)
+		}
+		// The specific defect: never the SPA shell under an asset's URL.
+		if c.wantStatus == 404 && string(body) == "ROOT" {
+			t.Errorf("GET %s served the SPA shell — %s", c.path, c.why)
 		}
 	}
 }
