@@ -129,3 +129,5 @@ Ship a placeholder `/public/config.json` in your build output for local dev; the
 ```bash
 go test -v ./...
 ```
+
+Licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option — per HIP-0137.
