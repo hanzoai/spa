@@ -347,6 +347,12 @@ func resolveAndServe(w http.ResponseWriter, r *http.Request, root string) {
 	// asset. Only extensionless client routes (/shop, /guide) fall through to
 	// index.html for client-side routing.
 	if filepath.Ext(clean) != "" || strings.HasPrefix(clean, "/img/") || strings.HasPrefix(clean, "/fonts/") {
+		// This miss is transient by construction: during a rolling deploy the
+		// old replica is asked for the new build's hashed assets. An edge cache
+		// that stores the 404 (Cloudflare's default TTL rules do) stretches
+		// that seconds-long window into hours of blank pages, so the refusal
+		// must be uncacheable.
+		w.Header().Set("Cache-Control", "no-store")
 		http.NotFound(w, r)
 		return
 	}
