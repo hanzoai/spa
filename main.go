@@ -129,7 +129,10 @@ func main() {
 		mux.Handle("/", spaHandler(root))
 	}
 
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	// Optional native auth gate. When SPA_PROTECT is unset, loadProtect returns
+	// nil and wrap is a no-op — the mux is served byte-for-byte as before.
+	handler := loadProtect().wrap(mux)
+	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
 
 // writeRuntimeConfig templates /public/config.json (or each app's config.json
@@ -141,6 +144,15 @@ func writeRuntimeConfig(root string, multiApp bool) error {
 	for _, e := range os.Environ() {
 		k, v, ok := strings.Cut(e, "=")
 		if !ok || !strings.HasPrefix(k, "SPA_") || v == "" {
+			continue
+		}
+		// config.json is served to browsers, so never template a secret into
+		// it. Server-side secrets already drop the SPA_ prefix (PROTECT_*), but
+		// this is defense-in-depth: any SPA_* key that looks like a secret is
+		// excluded. NOT *TOKEN — SPA_COMMERCE_TOKEN is an intentionally
+		// browser-safe Published token that must appear in config.json.
+		if isSensitiveKey(k) {
+			log.Printf("spa: refusing to template %s into browser config.json (looks secret)", k)
 			continue
 		}
 		vars[toCamel(strings.TrimPrefix(k, "SPA_"))] = parseValue(v)
@@ -202,6 +214,17 @@ func marshalSorted(m map[string]any) []byte {
 	}
 	out = append(out, '}', '\n')
 	return out
+}
+
+// isSensitiveKey reports whether an env var name looks like a secret that must
+// never be templated into the browser-served config.json. SECRET/PASSWORD/
+// PRIVATE only — deliberately NOT TOKEN, because SPA_COMMERCE_TOKEN is a
+// browser-safe Published token the SPA needs at runtime.
+func isSensitiveKey(k string) bool {
+	u := strings.ToUpper(k)
+	return strings.Contains(u, "SECRET") ||
+		strings.Contains(u, "PASSWORD") ||
+		strings.Contains(u, "PRIVATE")
 }
 
 // toCamel turns SPA_API_HOST → apiHost, SPA_CHAIN_ID → chainId.
@@ -316,6 +339,15 @@ func resolveAndServe(w http.ResponseWriter, r *http.Request, root string) {
 	idx := filepath.Join(path, "index.html")
 	if fi, err := os.Stat(idx); err == nil && !fi.IsDir() {
 		serveFile(w, r, idx, false)
+		return
+	}
+	// A request that names a file — it has an extension (/app.js, /img/x.png)
+	// or targets a known asset root — but reached the fallback simply doesn't
+	// exist: 404 it rather than masquerading the SPA index.html shell as the
+	// asset. Only extensionless client routes (/shop, /guide) fall through to
+	// index.html for client-side routing.
+	if filepath.Ext(clean) != "" || strings.HasPrefix(clean, "/img/") || strings.HasPrefix(clean, "/fonts/") {
+		http.NotFound(w, r)
 		return
 	}
 	serveFile(w, r, filepath.Join(root, "index.html"), true)
