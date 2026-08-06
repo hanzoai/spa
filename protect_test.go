@@ -535,14 +535,25 @@ func TestMissingAssetIsNotShell(t *testing.T) {
 	srv := httptest.NewServer(spaHandler(dir))
 	defer srv.Close()
 
-	// Missing asset paths must 404, not serve the SPA shell.
+	// Missing asset paths must 404, not serve the SPA shell — and the 404 must
+	// be no-store: during a rolling deploy old replicas are asked for the new
+	// build's hashed assets, and an edge cache that stores that 404 turns the
+	// deploy window into hours of blank pages (hanzo.id sign-in, 2026-08-06).
 	for _, path := range []string{"/img/missing.png", "/fonts/none.woff2", "/app.js", "/style.css"} {
-		code, body := getBody(t, srv.URL+path)
-		if code != 404 {
-			t.Errorf("%s: status = %d, want 404", path, code)
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if strings.Contains(body, "SHELL") {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 404 {
+			t.Errorf("%s: status = %d, want 404", path, resp.StatusCode)
+		}
+		if strings.Contains(string(body), "SHELL") {
 			t.Errorf("%s: served the SPA shell instead of 404: %q", path, body)
+		}
+		if cc := resp.Header.Get("Cache-Control"); cc != "no-store" {
+			t.Errorf("%s: 404 Cache-Control = %q, want no-store (an edge-cached asset 404 outlives the deploy that caused it)", path, cc)
 		}
 	}
 
