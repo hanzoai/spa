@@ -3,8 +3,7 @@
 #
 # Tag-triggered ONLY: the version IS the tag, so one tag is one run is one
 # image, and a published tag is never overwritten — two digests behind one
-# name is the fleet's oldest trap. (The .github lane has been startup_failure
-# since 2026-08-04; this is the lane that ships.)
+# name is the fleet's oldest trap.
 name: build
 on:
   push:
