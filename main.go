@@ -13,15 +13,18 @@
 //	ENV MULTI_APP=true
 //
 // In multi-app mode, the hostname prefix selects the app:
-//   admin.example.com → /public/admin/
-//   app.example.com   → /public/app/
-//   Default           → /public/default/
+//
+//	admin.example.com → /public/admin/
+//	app.example.com   → /public/app/
+//	Default           → /public/default/
 //
 // Runtime config:
-//   SPA_API_HOST=https://api.test.example.com
-//   SPA_IAM_HOST=https://iam.test.example.com
-//   SPA_CHAIN_ID=1
-//   SPA_ENV=test
+//
+//	SPA_API_HOST=https://api.test.example.com
+//	SPA_IAM_HOST=https://iam.test.example.com
+//	SPA_CHAIN_ID=1
+//	SPA_ENV=test
+//
 // ...at startup is templated into /public/config.json (or
 // /public/<app>/config.json per app in multi-app mode). SPA reads
 // /config.json at boot. No SPA_* vars = the placeholder file shipped in
@@ -41,7 +44,6 @@ package main
 
 import (
 	"encoding/json"
-	"io"
 	"log"
 	"mime"
 	"net/http"
@@ -320,10 +322,10 @@ func spaHandler(root string) http.Handler {
 
 // resolveAndServe handles both Vite-style SPAs (one index.html) and Next.js
 // static exports (per-route .html or per-route /index.html). Resolution order:
-//   1. <root>/<path>        — exact file (e.g. /favicon.ico)
-//   2. <root>/<path>.html   — Next.js export with trailingSlash:false (/foo → /foo.html)
-//   3. <root>/<path>/index.html  — Next.js export with trailingSlash:true OR a directory hit
-//   4. <root>/index.html    — SPA fallback for client-side routing
+//  1. <root>/<path>        — exact file (e.g. /favicon.ico)
+//  2. <root>/<path>.html   — Next.js export with trailingSlash:false (/foo → /foo.html)
+//  3. <root>/<path>/index.html  — Next.js export with trailingSlash:true OR a directory hit
+//  4. <root>/index.html    — SPA fallback for client-side routing
 func resolveAndServe(w http.ResponseWriter, r *http.Request, root string) {
 	clean := filepath.Clean(r.URL.Path)
 	path := filepath.Join(root, clean)
@@ -341,12 +343,15 @@ func resolveAndServe(w http.ResponseWriter, r *http.Request, root string) {
 		serveFile(w, r, idx, false)
 		return
 	}
-	// A request that names a file — it has an extension (/app.js, /img/x.png)
-	// or targets a known asset root — but reached the fallback simply doesn't
-	// exist: 404 it rather than masquerading the SPA index.html shell as the
-	// asset. Only extensionless client routes (/shop, /guide) fall through to
-	// index.html for client-side routing.
-	if filepath.Ext(clean) != "" || strings.HasPrefix(clean, "/img/") || strings.HasPrefix(clean, "/fonts/") {
+	// A request that names a file — it ends in an asset's extension, or targets
+	// a known asset root — but reached the fallback simply doesn't exist: 404 it
+	// rather than serving the index.html shell under an asset's URL. Client
+	// routes fall through to index.html for client-side routing.
+	//
+	// The test is a named set rather than "has a dot", because a route can carry
+	// one: /users/z@hanzo.ai ends in ".ai", and answering that with a 404 logs
+	// every customer out of a page that exists.
+	if assetExtensions[strings.ToLower(filepath.Ext(clean))] || strings.HasPrefix(clean, "/img/") || strings.HasPrefix(clean, "/fonts/") {
 		// This miss is transient by construction: during a rolling deploy the
 		// old replica is asked for the new build's hashed assets. An edge cache
 		// that stores the 404 (Cloudflare's default TTL rules do) stretches
@@ -357,6 +362,20 @@ func resolveAndServe(w http.ResponseWriter, r *http.Request, root string) {
 		return
 	}
 	serveFile(w, r, filepath.Join(root, "index.html"), true)
+}
+
+// What a browser fetches as a subresource rather than navigates to. A build
+// emits these; a router never routes to one.
+var assetExtensions = map[string]bool{
+	".js": true, ".mjs": true, ".cjs": true, ".map": true,
+	".css":  true,
+	".json": true, ".xml": true, ".txt": true, ".webmanifest": true,
+	".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".svg": true,
+	".webp": true, ".avif": true, ".ico": true, ".bmp": true,
+	".woff": true, ".woff2": true, ".ttf": true, ".otf": true, ".eot": true,
+	".mp4": true, ".webm": true, ".mp3": true, ".wav": true, ".ogg": true,
+	".wasm": true, ".pdf": true, ".zip": true, ".gz": true, ".br": true,
+	".html": true, ".htm": true,
 }
 
 // permissionsPolicyHeader and cspFrameAncestorsHeader are evaluated once
@@ -417,7 +436,15 @@ func serveFile(w http.ResponseWriter, r *http.Request, path string, isFallback b
 	} else if isHashedAsset(name) {
 		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	} else {
-		w.Header().Set("Cache-Control", "public, max-age=86400")
+		// Everything else keeps its name across builds — logo.svg, brand.json,
+		// the favicons. Its content changes while its URL does not, so it has to
+		// be revalidated rather than held: a day-long TTL meant a new brand mark
+		// shipped, went live at the origin, and kept showing the old one to every
+		// returning visitor and every warm edge until the next day.
+		//
+		// A revalidation is a conditional GET answered by ETag or Last-Modified,
+		// so the common case is a 304 with no body — cheap enough to be the rule.
+		w.Header().Set("Cache-Control", "public, no-cache")
 	}
 
 	// Vary: Accept-Encoding is required regardless of which branch fires —
@@ -426,12 +453,17 @@ func serveFile(w http.ResponseWriter, r *http.Request, path string, isFallback b
 	// not serve the identity bytes to a client that asked for br/gzip).
 	w.Header().Set("Vary", "Accept-Encoding")
 
+	// The pre-compressed variants go through ServeContent too, on the original
+	// file's modification time. That is what answers a conditional request with
+	// a 304 — copying the bytes straight out skipped the check and re-sent the
+	// whole body every time, which is precisely the cost a revalidating
+	// Cache-Control is counting on not paying.
 	accept := r.Header.Get("Accept-Encoding")
 	if acceptsEncoding(accept, "br") {
 		if br, err := os.Open(path + ".br"); err == nil {
 			defer br.Close()
 			w.Header().Set("Content-Encoding", "br")
-			io.Copy(w, br)
+			http.ServeContent(w, r, fi.Name(), fi.ModTime(), br)
 			return
 		}
 	}
@@ -439,7 +471,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, path string, isFallback b
 		if gz, err := os.Open(path + ".gz"); err == nil {
 			defer gz.Close()
 			w.Header().Set("Content-Encoding", "gzip")
-			io.Copy(w, gz)
+			http.ServeContent(w, r, fi.Name(), fi.ModTime(), gz)
 			return
 		}
 	}

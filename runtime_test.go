@@ -162,27 +162,40 @@ func splitCut(s, sep string) (string, string, bool) {
 
 func TestResolveAndServeNextExport(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("ROOT"), 0644); err != nil { t.Fatal(err) }
-	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0755); err != nil { t.Fatal(err) }
-	if err := os.WriteFile(filepath.Join(dir, "docs.html"), []byte("DOCS"), 0644); err != nil { t.Fatal(err) }
-	if err := os.MkdirAll(filepath.Join(dir, "guide"), 0755); err != nil { t.Fatal(err) }
-	if err := os.WriteFile(filepath.Join(dir, "guide", "index.html"), []byte("GUIDE-INDEX"), 0644); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("ROOT"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "docs"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "docs.html"), []byte("DOCS"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "guide"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "guide", "index.html"), []byte("GUIDE-INDEX"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	srv := httptest.NewServer(spaHandler(dir))
 	defer srv.Close()
 
 	cases := map[string]string{
-		"/":         "ROOT",
-		"/docs":     "DOCS",
-		"/docs/":    "DOCS",
-		"/guide":    "GUIDE-INDEX",
-		"/guide/":   "GUIDE-INDEX",
-		"/missing":  "ROOT",
+		"/":        "ROOT",
+		"/docs":    "DOCS",
+		"/docs/":   "DOCS",
+		"/guide":   "GUIDE-INDEX",
+		"/guide/":  "GUIDE-INDEX",
+		"/missing": "ROOT",
 	}
 	for path, want := range cases {
 		r, err := http.Get(srv.URL + path)
-		if err != nil { t.Fatalf("%s: %v", path, err) }
-		body, _ := io.ReadAll(r.Body); r.Body.Close()
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		body, _ := io.ReadAll(r.Body)
+		r.Body.Close()
 		if string(body) != want {
 			t.Errorf("%s: got %q want %q", path, body, want)
 		}
