@@ -16,6 +16,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ONE IMAGE, BOTH ARCHITECTURES. The lab runs amd64 (evo) and arm64
+      # (spark), so an image built for one deploys on half the fleet. The pool
+      # is amd64, so the arm64 leg compiles under emulation and binfmt is what
+      # lets it run at all; the multi-platform build itself needs the
+      # docker-container driver, which the daemon's built-in builder is not.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          driver-opts: network=host
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -34,7 +45,9 @@ jobs:
             "https://ghcr.io/v2/hanzoai/spa/manifests/$V")
           if [ "$C" = "200" ]; then echo "::error::$V already published — bump the tag"; exit 1; fi
 
+      # Built straight to the registry: a manifest list cannot be loaded into a
+      # local daemon, so there is no `docker push` half to forget.
       - name: Build and push
         run: |
-          docker build -t "ghcr.io/hanzoai/spa:${{ steps.v.outputs.version }}" .
-          docker push "ghcr.io/hanzoai/spa:${{ steps.v.outputs.version }}"
+          docker buildx build --platform linux/amd64,linux/arm64 --provenance=false \
+            -t "ghcr.io/hanzoai/spa:${{ steps.v.outputs.version }}" --push .
