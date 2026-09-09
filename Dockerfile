@@ -1,4 +1,4 @@
-FROM golang:1.26.5-alpine AS build
+FROM golang:1.26.8-alpine AS build
 # ca-certificates: the scratch runtime has no trust store, so the Go server's
 # outbound HTTPS (protect mode: OIDC discovery + token + userinfo to hanzo.id)
 # would fail x509 verification ("certificate signed by unknown authority").
