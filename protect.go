@@ -125,7 +125,7 @@ func loadProtect() *protect {
 // parseAllow builds a case-insensitive set from a comma list.
 func parseAllow(s string) map[string]bool {
 	m := map[string]bool{}
-	for _, part := range strings.Split(s, ",") {
+	for part := range strings.SplitSeq(s, ",") {
 		e := strings.ToLower(strings.TrimSpace(part))
 		if e != "" {
 			m[e] = true

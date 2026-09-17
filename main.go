@@ -87,7 +87,7 @@ func main() {
 	// and you want old URLs to redirect rather than 404 / fall through
 	// to index.html.
 	if redirects := os.Getenv("REDIRECTS"); redirects != "" {
-		for _, pair := range strings.Split(redirects, ",") {
+		for pair := range strings.SplitSeq(redirects, ",") {
 			pair = strings.TrimSpace(pair)
 			from, to, ok := strings.Cut(pair, "=")
 			if !ok || from == "" || to == "" {
@@ -484,16 +484,16 @@ func serveFile(w http.ResponseWriter, r *http.Request, path string, isFallback b
 // `;q=0`. Whitespace and case are ignored. Falls back to a substring check
 // for the most common single-token forms (br, gzip).
 func acceptsEncoding(header, coding string) bool {
-	for _, part := range strings.Split(header, ",") {
+	for part := range strings.SplitSeq(header, ",") {
 		token := strings.TrimSpace(part)
 		if token == "" {
 			continue
 		}
 		name := token
 		q := "1"
-		if i := strings.IndexByte(token, ';'); i >= 0 {
-			name = strings.TrimSpace(token[:i])
-			rest := strings.TrimSpace(token[i+1:])
+		if before, after, ok := strings.Cut(token, ";"); ok {
+			name = strings.TrimSpace(before)
+			rest := strings.TrimSpace(after)
 			if eq := strings.IndexByte(rest, '='); eq > 0 && strings.EqualFold(strings.TrimSpace(rest[:eq]), "q") {
 				q = strings.TrimSpace(rest[eq+1:])
 			}
