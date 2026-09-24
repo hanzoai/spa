@@ -1,0 +1,9 @@
+# Hanzo CI/CD for hanzoai/spa: .github/workflows/cicd.yml imports hanzoai/ci,
+# which reads this file. The build door builds each image, one BuildKit Job
+# per platform.
+images:
+  - name: spa
+    context: .
+    dockerfile: Dockerfile
+    repo: ghcr.io/hanzoai/spa
+    platforms: [linux/amd64, linux/arm64]
