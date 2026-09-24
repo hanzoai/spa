@@ -2,3 +2,8 @@
 /spa-amd64
 /spa-arm64
 .DS_Store
+
+# Local symlinks to LLM.md
+CLAUDE.md
+AGENTS.md
+GEMINI.md

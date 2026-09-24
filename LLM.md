@@ -5,7 +5,7 @@
 
 ## Discovery
 
-This file (`CLAUDE.md`) is the canonical agent-facing readme; `LLM.md` is a symlink to it. Update either name and both stay in sync.
+This file (`LLM.md`) is the canonical agent-facing readme, and the one that is committed; `CLAUDE.md`, `AGENTS.md` and `GEMINI.md` are local symlinks to it.
 
 ## Where to look first
 
