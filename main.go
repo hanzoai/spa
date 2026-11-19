@@ -131,9 +131,11 @@ func main() {
 		mux.Handle("/", spaHandler(root))
 	}
 
-	// Optional native auth gate. When SPA_PROTECT is unset, loadProtect returns
-	// nil and wrap is a no-op — the mux is served byte-for-byte as before.
-	handler := loadProtect().wrap(mux)
+	// Optional lightweight analytics forwarding (client route-change beacons at
+	// /_/beacon + standalone HTML pageviews cooperating with hanzo/ingress
+	// without double-counting) and optional native IAM OIDC auth gate. When
+	// ANALYTICS_ENDPOINT and SPA_PROTECT are unset, both wraps are no-ops.
+	handler := loadProtect().wrap(loadAnalytics().wrap(mux))
 	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
 

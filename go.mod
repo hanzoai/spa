@@ -1,3 +1,3 @@
-module github.com/hanzoai/spa
+module hanzo.ai/spa
 
 go 1.27.1
